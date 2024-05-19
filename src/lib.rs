@@ -165,7 +165,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     if msg == WM_GETMINMAXINFO {
         // This is the very first message received by this function when calling
         // `CreateWindowExA()`. The user data pointer has not been set yet.
-        // Run the default handler and return eary.
+        // Run the default handler and return early.
         return DefWindowProcA(hwnd, msg, wparam, lparam);
     }
 
