@@ -26,7 +26,7 @@ impl Executor {
             panic!("another winmsg-executor is running on the same thread");
         }
 
-        // Callback for the user to stawn tasks.
+        // Callback for the user to spawn tasks.
         f(Spawner::new());
 
         // Run the windows message loop.
