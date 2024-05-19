@@ -7,6 +7,7 @@ use std::{
     pin::Pin,
     ptr,
     rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
     task::{Context, RawWaker, RawWakerVTable, Waker},
 };
 
@@ -40,11 +41,13 @@ fn register_class() {
     wnd_class.lpfnWndProc = Some(wndproc);
     wnd_class.hInstance = get_instance_handle();
     wnd_class.lpszClassName = CLASS_NAME.as_ptr().cast();
-    unsafe { RegisterClassA(&wnd_class) };
+    let _hwnd = unsafe { RegisterClassA(&wnd_class) };
+    debug_assert_ne!(_hwnd, 0);
 }
 
 fn unregister_class() {
-    unsafe { UnregisterClassA(CLASS_NAME.as_ptr().cast(), get_instance_handle()) };
+    let _ok = unsafe { UnregisterClassA(CLASS_NAME.as_ptr().cast(), get_instance_handle()) };
+    debug_assert_eq!(_ok, 1);
 }
 
 pub struct Executor {
@@ -57,10 +60,10 @@ impl Executor {
             panic!("another winmsg-executor is running on the same thread");
         }
 
-        // When running multiple executor threads the `register_class()` call
-        // only succeeds for the first thread, afther which the class exists
-        // and can be reused by the other executor threads.
-        register_class();
+        static CLASS_REFCOUNT: AtomicUsize = AtomicUsize::new(0);
+        if CLASS_REFCOUNT.fetch_add(1, Ordering::SeqCst) == 0 {
+            register_class();
+        }
 
         // Callback for the user to stawn tasks.
         f(Spawner::new());
@@ -79,10 +82,9 @@ impl Executor {
             }
         }
 
-        // In a multi thread scenario the unregistration fails as long as
-        // windows using this class exist. Only after exiting from the last
-        // executor thread the class will actually be unregistered.
-        unregister_class();
+        if CLASS_REFCOUNT.fetch_sub(1, Ordering::SeqCst) == 1 {
+            unregister_class();
+        }
 
         EXECUTOR_RUNNING.set(false);
     }
@@ -149,7 +151,7 @@ impl Spawner {
                 state_ptr.cast(),
             )
         };
-        assert_ne!(hwnd, 0);
+        debug_assert_ne!(hwnd, 0);
 
         // Trigger initial poll
         waker_for_window(hwnd).wake();
