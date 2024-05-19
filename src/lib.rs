@@ -22,6 +22,8 @@ pub struct Executor {
 impl Executor {
     pub fn run(f: impl FnOnce(Spawner)) {
         thread_local!(static EXECUTOR_RUNNING: Cell<bool> = const { Cell::new(false) });
+
+        // Prevent calls to `Executor::run()` from tasks.
         if EXECUTOR_RUNNING.replace(true) {
             panic!("another winmsg-executor is running on the same thread");
         }
@@ -61,7 +63,7 @@ impl Drop for QuitMessageLoopOnDrop {
 
 struct TaskState {
     future: Pin<Box<dyn Future<Output = ()>>>,
-    _keep_msg_loop_alive: Rc<QuitMessageLoopOnDrop>,
+    _msg_loop: Rc<QuitMessageLoopOnDrop>,
 }
 
 impl WindowContext for TaskState {
@@ -91,20 +93,20 @@ impl WindowContext for TaskState {
 
 #[derive(Clone)]
 pub struct Spawner {
-    keep_msg_loop_alive: Rc<QuitMessageLoopOnDrop>,
+    msg_loop: Rc<QuitMessageLoopOnDrop>,
 }
 
 impl Spawner {
     fn new() -> Self {
         Self {
-            keep_msg_loop_alive: Rc::new(QuitMessageLoopOnDrop),
+            msg_loop: Rc::new(QuitMessageLoopOnDrop),
         }
     }
 
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
         let state = TaskState {
             future: Box::pin(future),
-            _keep_msg_loop_alive: self.keep_msg_loop_alive.clone(),
+            _msg_loop: self.msg_loop.clone(),
         };
 
         // Create a message only window to run the taks.
