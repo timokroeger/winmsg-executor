@@ -13,12 +13,8 @@ use std::{
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
-const CLASS_NAME: &'static CStr = c"winmsg-executor";
+const CLASS_NAME: &CStr = c"winmsg-executor";
 const MSG_ID_WAKE: u32 = WM_NULL;
-
-thread_local! {
-    static EXECUTOR_RUNNING: Cell<bool> = const { Cell::new(false) };
-}
 
 // Taken from:
 // https://github.com/rust-windowing/winit/blob/v0.30.0/src/platform_impl/windows/util.rs#L140
@@ -56,11 +52,13 @@ pub struct Executor {
 
 impl Executor {
     pub fn run(f: impl FnOnce(Spawner)) {
+        thread_local!(static EXECUTOR_RUNNING: Cell<bool> = const { Cell::new(false) });
+        static CLASS_REFCOUNT: AtomicUsize = AtomicUsize::new(0);
+
         if EXECUTOR_RUNNING.replace(true) {
             panic!("another winmsg-executor is running on the same thread");
         }
 
-        static CLASS_REFCOUNT: AtomicUsize = AtomicUsize::new(0);
         if CLASS_REFCOUNT.fetch_add(1, Ordering::SeqCst) == 0 {
             register_class();
         }
