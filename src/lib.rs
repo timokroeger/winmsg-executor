@@ -89,6 +89,7 @@ impl WindowContext for TaskState {
     }
 }
 
+#[derive(Clone)]
 pub struct Spawner {
     keep_msg_loop_alive: Rc<QuitMessageLoopOnDrop>,
 }
