@@ -1,4 +1,4 @@
-# winmsg-executor
+# `winmsg-executor`
 
 Per-thread async rust executor for windows.
 Each task is backed by a [message-only window][1].
@@ -6,15 +6,27 @@ The executor thread runs the native [windows message loop][2] which dispatches w
 
 As a thin layer around WinAPI calls the whole executor is implemented in less than 250 lines of code.
 
-## WIP Comparison with similar crates
+## Features
 
-https://github.com/haileys/windows-executor/tree/main
+- Easy data sharing within a thread because `Send` or `Sync` is not required for the task future
+- A task can spawn new tasks on the same thread
+- Helper function/trait to implement window procedures in safe rust which can access state (`create_window()` fuction and `WindowsContext` trait).
 
-- ???
+## Comparison with similar crates
 
-https://github.com/saelay/windows-async-rs/
+### [`windows-exeuctor`](https://github.com/haileys/windows-executor/)
 
-- Only one top-level task
+- Supports only a single task.
+- Polls directly from the message loop.
+- Does not create a windows at all: Waker stores the message loops thread id and notifies it with `PostThreadMessage()`.
+- Does not quit the message loop correctly when the task futures returns.
+
+### [`windows-async-rs`](https://github.com/saelay/windows-async-rs/)
+
+- Supports only a single task.
+- Polls directly from the message loop even when receiving broadcast messages
+  unrelated to the task.
+- Questionable use of unsafe code
 
 ## License
 
