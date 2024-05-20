@@ -1,6 +1,7 @@
 use std::{
     future::Future,
-    task::{Context, RawWaker, RawWakerVTable, Waker},
+    sync::Arc,
+    task::{Context, Wake, Waker},
 };
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -9,13 +10,18 @@ use crate::window::create_window;
 
 const MSG_ID_WAKE: u32 = WM_NULL;
 
-fn waker_for_window(hwnd: HWND) -> Waker {
-    unsafe fn wake(hwnd: *const ()) {
-        PostMessageA(hwnd as HWND, MSG_ID_WAKE, 0, 0);
+struct HwndWaker(HWND);
+
+impl Wake for HwndWaker {
+    fn wake(self: std::sync::Arc<Self>) {
+        unsafe { PostMessageA(self.0, MSG_ID_WAKE, 0, 0) };
     }
-    static VTABLE: RawWakerVTable =
-        RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), wake, wake, |_| ());
-    unsafe { Waker::from_raw(RawWaker::new(hwnd as *const (), &VTABLE)) }
+}
+
+impl Drop for HwndWaker {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.0) };
+    }
 }
 
 pub fn dispatch(_msg: &MSG) -> bool {
@@ -26,18 +32,24 @@ pub fn dispatch(_msg: &MSG) -> bool {
 
 pub fn spawn(future: impl Future<Output = ()> + 'static) {
     let mut future = Box::pin(future);
+    let mut waker = None;
 
     // Create a message only window to run the taks.
-    let hwnd = create_window(Box::new(
+    create_window(Box::new(
         move |hwnd: HWND, msg: u32, _wparam: WPARAM, _lparam: LPARAM| {
-            if msg == MSG_ID_WAKE {
+            if msg == WM_CREATE {
+                waker = Some(Waker::from(Arc::new(HwndWaker(hwnd))));
+            }
+
+            if msg == WM_CREATE || msg == MSG_ID_WAKE {
                 // Poll the tasks future
                 if future
                     .as_mut()
-                    .poll(&mut Context::from_waker(&waker_for_window(hwnd)))
+                    .poll(&mut Context::from_waker(waker.as_ref().unwrap()))
                     .is_ready()
                 {
-                    unsafe { DestroyWindow(hwnd) };
+                    // Remove this tasks waker reference.
+                    waker = None;
                 }
                 Some(0)
             } else {
@@ -45,8 +57,4 @@ pub fn spawn(future: impl Future<Output = ()> + 'static) {
             }
         },
     ));
-    debug_assert_ne!(hwnd, 0);
-
-    // Trigger initial poll
-    waker_for_window(hwnd).wake();
 }
