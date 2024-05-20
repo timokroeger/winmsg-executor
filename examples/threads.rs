@@ -9,7 +9,7 @@ async fn poll_n_times(mut n_poll: usize) {
             Poll::Ready(())
         } else {
             n_poll -= 1;
-            cx.waker().clone().wake();
+            cx.waker().wake_by_ref();
             Poll::Pending
         }
     })
