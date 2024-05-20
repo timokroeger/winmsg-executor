@@ -1,19 +1,9 @@
+mod backend;
 pub mod window;
 
-use std::{
-    cell::Cell,
-    future::Future,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    pin::Pin,
-    rc::Rc,
-    task::{Context, RawWaker, RawWakerVTable, Waker},
-};
+use std::{cell::Cell, future::Future, marker::PhantomData, mem::MaybeUninit, rc::Rc};
 
-use window::{create_window, WindowContext};
-use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
-
-const MSG_ID_WAKE: u32 = WM_NULL;
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 pub struct Executor {
     _not_send: PhantomData<*const ()>,
@@ -37,8 +27,10 @@ impl Executor {
             let (ret, msg) = unsafe { (GetMessageA(msg.as_mut_ptr(), 0, 0, 0), msg.assume_init()) };
             match ret {
                 1 => unsafe {
-                    TranslateMessage(&msg);
-                    DispatchMessageA(&msg);
+                    if !backend::dispatch(&msg) {
+                        TranslateMessage(&msg);
+                        DispatchMessageA(&msg);
+                    }
                 },
                 0 => break,
                 _ => unreachable!(),
@@ -61,36 +53,6 @@ impl Drop for QuitMessageLoopOnDrop {
     }
 }
 
-struct TaskState {
-    future: Pin<Box<dyn Future<Output = ()>>>,
-    _msg_loop: Rc<QuitMessageLoopOnDrop>,
-}
-
-impl WindowContext for TaskState {
-    fn wndproc(
-        &mut self,
-        hwnd: HWND,
-        msg: u32,
-        _wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Option<LRESULT> {
-        if msg == MSG_ID_WAKE {
-            // Poll the tasks future
-            if self
-                .future
-                .as_mut()
-                .poll(&mut Context::from_waker(&waker_for_window(hwnd)))
-                .is_ready()
-            {
-                unsafe { DestroyWindow(hwnd) };
-            }
-            Some(0)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Spawner {
     msg_loop: Rc<QuitMessageLoopOnDrop>,
@@ -104,25 +66,6 @@ impl Spawner {
     }
 
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
-        let state = TaskState {
-            future: Box::pin(future),
-            _msg_loop: self.msg_loop.clone(),
-        };
-
-        // Create a message only window to run the taks.
-        let hwnd = create_window(state);
-        debug_assert_ne!(hwnd, 0);
-
-        // Trigger initial poll
-        waker_for_window(hwnd).wake();
+        backend::spawn(self.msg_loop.clone(), future);
     }
-}
-
-fn waker_for_window(hwnd: HWND) -> Waker {
-    unsafe fn wake(hwnd: *const ()) {
-        PostMessageA(hwnd as HWND, MSG_ID_WAKE, 0, 0);
-    }
-    static VTABLE: RawWakerVTable =
-        RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), wake, wake, |_| ());
-    unsafe { Waker::from_raw(RawWaker::new(hwnd as *const (), &VTABLE)) }
 }
