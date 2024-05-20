@@ -1,22 +1,17 @@
 use std::{
     future::Future,
     pin::Pin,
-    rc::Rc,
     task::{Context, RawWaker, RawWakerVTable, Waker},
 };
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
-use crate::{
-    window::{create_window, WindowContext},
-    QuitMessageLoopOnDrop,
-};
+use crate::window::{create_window, WindowContext};
 
 const MSG_ID_WAKE: u32 = WM_NULL;
 
 struct TaskState {
     future: Pin<Box<dyn Future<Output = ()>>>,
-    _msg_loop: Rc<QuitMessageLoopOnDrop>,
 }
 
 impl WindowContext for TaskState {
@@ -59,10 +54,9 @@ pub fn dispatch(_msg: &MSG) -> bool {
     false
 }
 
-pub fn spawn(msg_loop: Rc<QuitMessageLoopOnDrop>, future: impl Future<Output = ()> + 'static) {
+pub fn spawn(future: impl Future<Output = ()> + 'static) {
     let state = TaskState {
         future: Box::pin(future),
-        _msg_loop: msg_loop.clone(),
     };
 
     // Create a message only window to run the taks.

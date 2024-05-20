@@ -70,6 +70,12 @@ impl Spawner {
     }
 
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
-        backend::spawn(self.msg_loop.clone(), future);
+        let msg_loop = self.msg_loop.clone();
+        let future = async move {
+            // Keep the message loop alive as long as the future runs.
+            let _msg_loop = msg_loop;
+            future.await;
+        };
+        backend::spawn(future);
     }
 }

@@ -1,9 +1,7 @@
-use std::{future::Future, ptr::NonNull, rc::Rc};
+use std::{future::Future, ptr::NonNull};
 
 use async_task::Runnable;
 use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMessaging::*};
-
-use crate::QuitMessageLoopOnDrop;
 
 const MSG_ID_WAKE: u32 = WM_NULL;
 
@@ -18,7 +16,7 @@ pub fn dispatch(msg: &MSG) -> bool {
     }
 }
 
-pub fn spawn(msg_loop: Rc<QuitMessageLoopOnDrop>, future: impl Future<Output = ()> + 'static) {
+pub fn spawn(future: impl Future<Output = ()> + 'static) {
     let mut thread_handle = 0;
     let thread_id = unsafe {
         let process_handle = GetCurrentProcess();
@@ -35,8 +33,6 @@ pub fn spawn(msg_loop: Rc<QuitMessageLoopOnDrop>, future: impl Future<Output = (
     };
 
     let future = async move {
-        // Keep the message loop alive as long as the future runs.
-        let _msg_loop = msg_loop;
         future.await;
         unsafe { CloseHandle(thread_handle) };
     };
