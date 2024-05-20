@@ -70,11 +70,6 @@ pub fn create_window(cx: impl WindowContext) -> HWND {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    println!(
-        "WND  hwnd={:p} msg={:06}, wparam={:06}, lparam={:06}",
-        hwnd as *const (), msg, wparam, lparam
-    );
-
     if msg == WM_GETMINMAXINFO {
         // This is the very first message received by this function when calling
         // `CreateWindowExA()`. The user data pointer has not been set yet.
