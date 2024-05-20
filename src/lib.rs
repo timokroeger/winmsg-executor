@@ -1,51 +1,44 @@
 mod backend;
 pub mod window;
 
-use std::{cell::Cell, future::Future, marker::PhantomData, mem::MaybeUninit, rc::Rc};
+use std::{
+    cell::Cell,
+    future::Future,
+    mem::MaybeUninit,
+    rc::{Rc, Weak},
+};
 
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-pub struct Executor {
-    _not_send: PhantomData<*const ()>,
+thread_local! {
+    static MESSAGE_LOOP: Cell<Weak<QuitMessageLoopOnDrop>> = const { Cell::new(Weak::new()) };
 }
 
-impl Executor {
-    pub fn run(f: impl FnOnce(Spawner)) {
-        thread_local!(static EXECUTOR_RUNNING: Cell<bool> = const { Cell::new(false) });
+pub fn run(future: impl Future<Output = ()> + 'static) {
+    // "Call PeekMessage as shown here to force the system to create the message queue."
+    // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagea
+    let mut msg = MaybeUninit::uninit();
+    unsafe { PeekMessageA(msg.as_mut_ptr(), 0, WM_USER, WM_USER, PM_NOREMOVE) };
 
-        // Prevent calls to `Executor::run()` from tasks.
-        if EXECUTOR_RUNNING.replace(true) {
-            panic!("another winmsg-executor is running on the same thread");
+    // Prepare the thread local message loop reference for `spawn()` to work.
+    let msg_loop = Rc::new(QuitMessageLoopOnDrop);
+    MESSAGE_LOOP.set(Rc::downgrade(&msg_loop));
+    spawn(future);
+    drop(msg_loop);
+
+    // Run the windows message loop.
+    loop {
+        let (ret, msg) = unsafe { (GetMessageA(msg.as_mut_ptr(), 0, 0, 0), msg.assume_init()) };
+        match ret {
+            1 => unsafe {
+                if !backend::dispatch(&msg) {
+                    TranslateMessage(&msg);
+                    DispatchMessageA(&msg);
+                }
+            },
+            0 => break,
+            _ => unreachable!(),
         }
-
-        // "Call PeekMessage as shown here to force the system to create the message queue."
-        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagea
-        let mut msg = MaybeUninit::uninit();
-        unsafe { PeekMessageA(msg.as_mut_ptr(), 0, WM_USER, WM_USER, PM_NOREMOVE) };
-
-        // Callback for the user to spawn tasks.
-        f(Spawner::new());
-
-        // Run the windows message loop.
-        loop {
-            let (ret, msg) = unsafe { (GetMessageA(msg.as_mut_ptr(), 0, 0, 0), msg.assume_init()) };
-            match ret {
-                1 => unsafe {
-                    if !backend::dispatch(&msg) {
-                        TranslateMessage(&msg);
-                        DispatchMessageA(&msg);
-                    }
-                },
-                0 => break,
-                _ => unreachable!(),
-            }
-        }
-
-        EXECUTOR_RUNNING.set(false);
-    }
-
-    pub fn block_on(future: impl Future<Output = ()> + 'static) {
-        Self::run(|spawner| spawner.spawn(future))
     }
 }
 
@@ -57,25 +50,21 @@ impl Drop for QuitMessageLoopOnDrop {
     }
 }
 
-#[derive(Clone)]
-pub struct Spawner {
-    msg_loop: Rc<QuitMessageLoopOnDrop>,
-}
-
-impl Spawner {
-    fn new() -> Self {
-        Self {
-            msg_loop: Rc::new(QuitMessageLoopOnDrop),
-        }
-    }
-
-    pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
-        let msg_loop = self.msg_loop.clone();
-        let future = async move {
-            // Keep the message loop alive as long as the future runs.
-            let _msg_loop = msg_loop;
-            future.await;
-        };
-        backend::spawn(future);
-    }
+pub fn spawn(future: impl Future<Output = ()> + 'static) {
+    // Get a strong reference to this threads message loop.
+    let msg_loop = MESSAGE_LOOP.with(|msg_loop_cell| {
+        let weak = msg_loop_cell.take();
+        let strong = weak.upgrade().expect(
+            "no message loop available: \
+            `spawn()` must be called from within a future executed by `run()`",
+        );
+        msg_loop_cell.set(weak);
+        strong
+    });
+    let future = async move {
+        // Keep the message loop alive as long as the future runs.
+        let _msg_loop = msg_loop;
+        future.await;
+    };
+    backend::spawn(future);
 }
