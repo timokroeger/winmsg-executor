@@ -18,11 +18,15 @@ impl Executor {
             panic!("another winmsg-executor is running on the same thread");
         }
 
+        // "Call PeekMessage as shown here to force the system to create the message queue."
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagea
+        let mut msg = MaybeUninit::uninit();
+        unsafe { PeekMessageA(msg.as_mut_ptr(), 0, WM_USER, WM_USER, PM_NOREMOVE) };
+
         // Callback for the user to spawn tasks.
         f(Spawner::new());
 
         // Run the windows message loop.
-        let mut msg = MaybeUninit::uninit();
         loop {
             let (ret, msg) = unsafe { (GetMessageA(msg.as_mut_ptr(), 0, 0, 0), msg.assume_init()) };
             match ret {
