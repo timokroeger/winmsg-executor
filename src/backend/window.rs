@@ -1,43 +1,13 @@
 use std::{
     future::Future,
-    pin::Pin,
     task::{Context, RawWaker, RawWakerVTable, Waker},
 };
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
-use crate::window::{create_window, WindowContext};
+use crate::window::create_window;
 
 const MSG_ID_WAKE: u32 = WM_NULL;
-
-struct TaskState {
-    future: Pin<Box<dyn Future<Output = ()>>>,
-}
-
-impl WindowContext for TaskState {
-    fn wndproc(
-        &mut self,
-        hwnd: HWND,
-        msg: u32,
-        _wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Option<LRESULT> {
-        if msg == MSG_ID_WAKE {
-            // Poll the tasks future
-            if self
-                .future
-                .as_mut()
-                .poll(&mut Context::from_waker(&waker_for_window(hwnd)))
-                .is_ready()
-            {
-                unsafe { DestroyWindow(hwnd) };
-            }
-            Some(0)
-        } else {
-            None
-        }
-    }
-}
 
 fn waker_for_window(hwnd: HWND) -> Waker {
     unsafe fn wake(hwnd: *const ()) {
@@ -55,12 +25,26 @@ pub fn dispatch(_msg: &MSG) -> bool {
 }
 
 pub fn spawn(future: impl Future<Output = ()> + 'static) {
-    let state = TaskState {
-        future: Box::pin(future),
-    };
+    let mut future = Box::pin(future);
 
     // Create a message only window to run the taks.
-    let hwnd = create_window(state);
+    let hwnd = create_window(Box::new(
+        move |hwnd: HWND, msg: u32, _wparam: WPARAM, _lparam: LPARAM| {
+            if msg == MSG_ID_WAKE {
+                // Poll the tasks future
+                if future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker_for_window(hwnd)))
+                    .is_ready()
+                {
+                    unsafe { DestroyWindow(hwnd) };
+                }
+                Some(0)
+            } else {
+                None
+            }
+        },
+    ));
     debug_assert_ne!(hwnd, 0);
 
     // Trigger initial poll

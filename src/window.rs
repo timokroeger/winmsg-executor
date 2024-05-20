@@ -4,13 +4,11 @@ use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
 const CLASS_NAME: &CStr = c"winmsg-executor";
 
-pub trait WindowContext {
-    fn wndproc(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT>;
-}
+type WndProc = Box<dyn FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT>>;
 
-fn window_context_from_hwnd(hwnd: HWND) -> &'static mut Box<dyn WindowContext> {
+fn wndproc_from_hwnd(hwnd: HWND) -> &'static mut WndProc {
     unsafe {
-        let cx_ptr = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut Box<dyn WindowContext>;
+        let cx_ptr = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut WndProc;
         cx_ptr.as_mut().unwrap()
     }
 }
@@ -41,7 +39,7 @@ fn register_class() {
 
 /// The window must be destroyed with a call to `DestroyWindow()` manually,
 /// either using the returned handle or from within [`WindowContext::wndproc()`].
-pub fn create_window(cx: impl WindowContext) -> HWND {
+pub fn create_window(wndproc: WndProc) -> HWND {
     // When creating multiple windows the `register_class()` call only succeeds
     // the first time, after which the class exists and can be reused.
     // This means class registration API behaves like a `OnceLock`.
@@ -49,8 +47,6 @@ pub fn create_window(cx: impl WindowContext) -> HWND {
     // is unloaded during program execution: For now an unsupported use case.
     register_class();
 
-    let boxed_trait: Box<dyn WindowContext> = Box::new(cx);
-    let cx = Box::new(boxed_trait);
     unsafe {
         CreateWindowExA(
             0,
@@ -64,7 +60,7 @@ pub fn create_window(cx: impl WindowContext) -> HWND {
             HWND_MESSAGE,
             0,
             get_instance_handle(),
-            Box::into_raw(cx).cast(),
+            Box::into_raw(Box::new(wndproc)).cast(),
         )
     }
 }
@@ -93,15 +89,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return 1; // Continue with window creation
     }
 
-    let cx = window_context_from_hwnd(hwnd);
+    let wndproc = wndproc_from_hwnd(hwnd);
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
         // the windows is destroyed. Deallocate the window context.
-        let lol = Box::from_raw(cx);
-        drop(lol);
+        drop(Box::from_raw(wndproc));
         return 0;
     }
 
-    cx.wndproc(hwnd, msg, wparam, lparam)
-        .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+    wndproc(hwnd, msg, wparam, lparam).unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
 }
