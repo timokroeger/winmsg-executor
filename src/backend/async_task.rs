@@ -5,6 +5,23 @@ use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMess
 
 const MSG_ID_WAKE: u32 = WM_NULL;
 
+pub fn run() {
+    // Any modal window (i.e. a right-click menu) blocks the main message loops
+    // and dispatches messages internally. To keep the executor running use a
+    // hook to get access to modal windows internal message loop.
+    unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        println!("in hook code={}", code);
+        if code >= 0 && dispatch(&*(lparam as *const MSG)) {
+            -1
+        } else {
+            CallNextHookEx(0, code, wparam, lparam)
+        }
+    }
+    let hook = unsafe { SetWindowsHookExA(WH_MSGFILTER, Some(hook_proc), 0, GetCurrentThreadId()) };
+    crate::run_message_loop();
+    unsafe { UnhookWindowsHookEx(hook) };
+}
+
 pub fn dispatch(msg: &MSG) -> bool {
     if msg.hwnd == 0 && msg.message == MSG_ID_WAKE {
         let runnable =

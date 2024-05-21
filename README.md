@@ -10,6 +10,7 @@ As a thin layer around WinAPI calls the whole executor is implemented in less th
 
 - Easy data sharing within a thread because `Send` or `Sync` is not required for the task future
 - A task can spawn new tasks on the same thread
+- Modal windows like menus do not block other tasks running on the same thread.
 - Helper function/trait to implement window procedures in safe rust which can access state (`create_window()` fuction and `WindowsContext` trait).
 
 ## Comparison with similar crates
@@ -24,8 +25,7 @@ As a thin layer around WinAPI calls the whole executor is implemented in less th
 ### [`windows-async-rs`](https://github.com/saelay/windows-async-rs/)
 
 - Supports only a single task.
-- Polls directly from the message loop even when receiving broadcast messages
-  unrelated to the task.
+- Polls directly from the message loop even when receiving broadcast messages unrelated to the task.
 - Questionable use of unsafe code
 
 ## License

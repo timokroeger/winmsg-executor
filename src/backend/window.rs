@@ -24,6 +24,10 @@ impl Drop for HwndWaker {
     }
 }
 
+pub fn run() {
+    crate::run_message_loop();
+}
+
 pub fn dispatch(_msg: &MSG) -> bool {
     // Forward all message and let windows handle the dispatching of messages
     // to each tasks wndproc.

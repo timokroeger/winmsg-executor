@@ -26,18 +26,25 @@ pub fn run(future: impl Future<Output = ()> + 'static) {
     spawn(future);
     drop(msg_loop);
 
-    // Run the windows message loop.
+    backend::run();
+}
+
+fn run_message_loop() {
     loop {
-        let (ret, msg) = unsafe { (GetMessageA(msg.as_mut_ptr(), 0, 0, 0), msg.assume_init()) };
-        match ret {
-            1 => unsafe {
-                if !backend::dispatch(&msg) {
-                    TranslateMessage(&msg);
-                    DispatchMessageA(&msg);
+        let mut msg = MaybeUninit::uninit();
+        unsafe {
+            let ret = GetMessageA(msg.as_mut_ptr(), 0, 0, 0);
+            let msg = msg.assume_init();
+            match ret {
+                1 => {
+                    if !backend::dispatch(&msg) {
+                        TranslateMessage(&msg);
+                        DispatchMessageA(&msg);
+                    }
                 }
-            },
-            0 => break,
-            _ => unreachable!(),
+                0 => break,
+                _ => unreachable!(),
+            }
         }
     }
 }
