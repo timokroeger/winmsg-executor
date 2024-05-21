@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 mod backend;
 pub mod window;
 
@@ -14,6 +16,8 @@ thread_local! {
     static MESSAGE_LOOP: Cell<Weak<QuitMessageLoopOnDrop>> = const { Cell::new(Weak::new()) };
 }
 
+/// Runs the provided future on the current thread.
+/// Waits for all spawned futures to complete before returning.
 pub fn run(future: impl Future<Output = ()> + 'static) {
     // "Call PeekMessage as shown here to force the system to create the message queue."
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagea
@@ -57,6 +61,8 @@ impl Drop for QuitMessageLoopOnDrop {
     }
 }
 
+/// Spawn a new future on the current thread.
+/// Must be called from an existing task.
 pub fn spawn(future: impl Future<Output = ()> + 'static) {
     // Get a strong reference to this threads message loop.
     let msg_loop = MESSAGE_LOOP.with(|msg_loop_cell| {

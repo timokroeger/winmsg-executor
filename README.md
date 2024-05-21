@@ -11,7 +11,7 @@ As a thin layer around WinAPI calls the whole executor is implemented in less th
 - Easy data sharing within a thread because `Send` or `Sync` is not required for the task future
 - A task can spawn new tasks on the same thread
 - Modal windows like menus do not block other tasks running on the same thread.
-- Helper function/trait to implement window procedures in safe rust which can access state (`create_window()` fuction and `WindowsContext` trait).
+- Helper code to implement window procedures with closures that can have state.
 
 ## Comparison with similar crates
 

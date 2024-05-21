@@ -1,3 +1,5 @@
+//! Window wrapper which allows to move state into the `wndproc` closure.
+
 use std::{ffi::CStr, ptr};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -38,7 +40,7 @@ fn register_class() {
 }
 
 /// The window must be destroyed with a call to `DestroyWindow()` manually,
-/// either using the returned handle or from within [`WindowContext::wndproc()`].
+/// either using the returned handle or from within the `wndproc` closure.
 pub fn create_window(wndproc: WndProc) -> HWND {
     // When creating multiple windows the `register_class()` call only succeeds
     // the first time, after which the class exists and can be reused.
