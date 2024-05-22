@@ -8,24 +8,20 @@ use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
 use crate::window::create_window;
 
-const MSG_ID_WAKE: u32 = WM_NULL;
+const MSG_ID_WAKE: u32 = WM_USER;
 
-struct HwndWaker(HWND);
+struct Task(HWND);
 
-impl Wake for HwndWaker {
+impl Wake for Task {
     fn wake(self: std::sync::Arc<Self>) {
         unsafe { PostMessageA(self.0, MSG_ID_WAKE, 0, 0) };
     }
 }
 
-impl Drop for HwndWaker {
+impl Drop for Task {
     fn drop(&mut self) {
         unsafe { DestroyWindow(self.0) };
     }
-}
-
-pub fn run() {
-    crate::run_message_loop();
 }
 
 pub fn dispatch(_msg: &MSG) -> bool {
@@ -42,7 +38,7 @@ pub fn spawn(future: impl Future<Output = ()> + 'static) {
     create_window(Box::new(
         move |hwnd: HWND, msg: u32, _wparam: WPARAM, _lparam: LPARAM| {
             if msg == WM_CREATE {
-                waker = Some(Waker::from(Arc::new(HwndWaker(hwnd))));
+                waker = Some(Waker::from(Arc::new(Task(hwnd))));
             }
 
             if msg == WM_CREATE || msg == MSG_ID_WAKE {
