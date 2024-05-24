@@ -4,7 +4,7 @@ Per-thread async rust executor for windows.
 Each task is backed by a [message-only window][1].
 The executor thread runs the native [windows message loop][2] which dispatches wake messages to the tasks window procedure which polls the task future.
 
-As a thin layer around WinAPI calls the whole executor is implemented in less than 250 lines of code.
+As a thin wrapper for WinAPI calls the whole executor is implemented in around 300 lines of code.
 
 ## Features
 

@@ -1,6 +1,6 @@
 use std::{future::poll_fn, task::Poll};
 
-use winmsg_executor::{run, spawn};
+use winmsg_executor::{spawn, MessageLoop};
 
 async fn poll_n_times(mut n_poll: usize) {
     poll_fn(|cx| {
@@ -18,8 +18,9 @@ async fn poll_n_times(mut n_poll: usize) {
 
 fn main() {
     println!("hello");
-    run(async {
-        spawn(async {
+    let msg_loop = MessageLoop::new();
+    msg_loop.block_on(async {
+        let task = spawn(async {
             println!("async hello 1");
             poll_n_times(3).await;
             println!("async bye 1");
@@ -28,6 +29,8 @@ fn main() {
         println!("async hello 2");
         poll_n_times(2).await;
         println!("async bye 2");
+
+        task.await;
     });
     println!("bye");
 }
