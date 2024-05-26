@@ -9,7 +9,7 @@ use std::{
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
-use crate::window::create_window;
+use crate::util::create_window;
 
 pub fn dispatch(_msg: &MSG) -> bool {
     // Forward all message and let windows handle the dispatching of messages

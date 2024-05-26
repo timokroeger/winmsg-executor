@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod backend;
-pub mod window;
+pub mod util;
 
 use std::{
     cell::Cell,
