@@ -24,13 +24,14 @@ fn main() {
             println!("async hello 1");
             poll_n_times(3).await;
             println!("async bye 1");
+            "async 1 result"
         });
 
         println!("async hello 2");
         poll_n_times(2).await;
         println!("async bye 2");
 
-        task.await;
+        println!("{}", task.await);
     });
     println!("bye");
 }
