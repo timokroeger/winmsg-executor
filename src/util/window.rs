@@ -5,6 +5,7 @@ use std::{ffi::CStr, ptr};
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
 const CLASS_NAME: &CStr = c"winmsg-executor";
+
 // Taken from:
 // https://github.com/rust-windowing/winit/blob/v0.30.0/src/platform_impl/windows/util.rs#L140
 fn get_instance_handle() -> HINSTANCE {
@@ -80,11 +81,8 @@ unsafe extern "system" fn wndproc_setup(
         // Replace our `wndproc` with the one using the correct type.
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC, subclassinfo.wndproc as isize);
 
-        // Attach user data to the window so it can be accessed from this
-        // callback function when receiving other messages.
-        // This must be done here because the WM_NCCREATE (which is the second
-        // message after `WM_GETMINMAXINFO`) and other message (e.g WM_CREATE)
-        // are dispatched to this callback before `CreateWindowEx()` returns.
+        // Attach user data to the window so it can be accessed from the
+        // `wndproc` callback function when receiving other messages.
         // https://devblogs.microsoft.com/oldnewthing/20191014-00/?p=102992
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, subclassinfo.user_data as isize);
 

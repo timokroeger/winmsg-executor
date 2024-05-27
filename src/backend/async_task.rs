@@ -12,7 +12,8 @@ use windows_sys::Win32::{System::Threading::GetCurrentThreadId, UI::WindowsAndMe
 const MSG_ID_WAKE: u32 = WM_APP;
 
 pub fn dispatch(msg: &MSG) -> bool {
-    // Only look at messages sent by `PostThreadMessageA()`
+    // Ignore any window messages (hwnd != 0) and look at wake messages messages
+    // sent to the message loop directly (hwnd == 0).
     if msg.hwnd == 0 && msg.message == MSG_ID_WAKE {
         let runnable =
             unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(msg.lParam as *mut _)) };
@@ -28,7 +29,11 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // closure which can run from a different.
     let thread_id = unsafe { GetCurrentThreadId() };
 
-    // To schedule the task we post the runnable to our own threads message queue.
+    // To schedule the task we post the runnable to our own threads message
+    // queue. `async-task` tracks if the task has completed and prevents the
+    // schedule closure from being called. That means its safe to keep waker
+    // references in different threads even after a task has completed and its
+    // executing thread was terminated.
     let schedule = move |runnable: Runnable| unsafe {
         PostThreadMessageA(thread_id, MSG_ID_WAKE, 0, runnable.into_raw().as_ptr() as _);
     };
@@ -53,6 +58,7 @@ fn spawn_local<T: 'static>(
     unsafe { async_task::spawn_unchecked(future, schedule) }
 }
 
+// Use a newtype around `async-task` task type to adjust its drop behavior.
 pub struct Task<T> {
     inner: ManuallyDrop<async_task::Task<T>>,
 }

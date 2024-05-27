@@ -11,8 +11,8 @@ use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 use crate::util::create_window;
 
 pub fn dispatch(_msg: &MSG) -> bool {
-    // Forward all message and let windows handle the dispatching of messages
-    // to each tasks wndproc.
+    // Forward all message and let the operating system handle dispatching of
+    // messages to the matching wndproc.
     false
 }
 
@@ -29,7 +29,9 @@ struct TaskInner<T> {
     state: Cell<TaskState<T>>,
 }
 
-// SAFETY: State is only accessed from one thread.
+// SAFETY: The wake implementation (which requires `Send` and `Sync`) only uses
+// the window handle and passes it to a safe function call. All other state is
+// only accessed from one thread.
 unsafe impl<T> Send for TaskInner<T> {}
 unsafe impl<T> Sync for TaskInner<T> {}
 
@@ -44,6 +46,13 @@ impl<T> TaskInner<T> {
 
 impl<T> Wake for TaskInner<T> {
     fn wake(self: Arc<Self>) {
+        // Ideally the waker would know if the task has completed to decide if
+        // its necessary to send a wake message. But that also means access to
+        // task state must be made thread safe. Instead, always post the wake
+        // message and let the receiver side (which runs on the same thread the
+        // task was created on) decide if a task needs to be polled.
+        // `Arc<Self>` keeps the target window alive for as long as wakers for
+        // the task exist.
         unsafe { PostMessageA(self.hwnd, MSG_ID_WAKE, 0, Arc::into_raw(self) as isize) };
     }
 }
@@ -79,7 +88,7 @@ impl<T> Future for Task<T> {
 }
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
-    // Create a message only window to run the taks.
+    // Create a message only window to run the tasks.
     let hwnd = create_window(
         true,
         |_hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM| {
