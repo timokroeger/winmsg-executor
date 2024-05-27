@@ -34,10 +34,6 @@ impl MessageLoop {
     /// Creates a message queue for the current thread but does not run the
     /// dispatch loop for it yet.
     pub fn new() -> Self {
-        // "Call PeekMessage as shown here to force the system to create the message queue."
-        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagea
-        let mut msg = MaybeUninit::uninit();
-        unsafe { PeekMessageA(msg.as_mut_ptr(), 0, WM_USER, WM_USER, PM_NOREMOVE) };
         Self {
             _not_send: PhantomData,
         }
@@ -52,7 +48,7 @@ impl MessageLoop {
     /// Any spawned tasks will be suspended after `block_on` returns. Calling
     /// `block_on` again will resume previously spawned tasks.
     pub fn block_on<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> T {
-        MESSAGE_LOOP_RUNNING.set(true);
+        assert!(!MESSAGE_LOOP_RUNNING.replace(true), "a message loop is running already");
 
         // Any modal window (i.e. a right-click menu) blocks the main message loop
         // and dispatches messages internally. To keep the executor running use a
@@ -98,6 +94,13 @@ impl MessageLoop {
 
         poll_assume_ready(task)
     }
+
+    /// Runs the message loop.
+    /// 
+    /// Executes previously [`spawn`]ed tasks.
+    pub fn run(&self) {
+        self.block_on(async {});
+    }
 }
 
 fn poll_assume_ready<T>(future: impl Future<Output = T>) -> T {
@@ -122,18 +125,9 @@ pub type Task<T> = backend::Task<T>;
 
 /// Spawns a new future on the current thread.
 ///
-/// Must be called within [`block_on()`](MessageLoop::block_on) or any
-/// previously spawned task.
-///
-/// # Panics
-///
-/// Panics when no message loop is running.
+/// This function may be used to spawn tasks when the message loop is not
+/// running. The provided future will start running once the message loop
+/// is entered with [`MessageLoop::block_on()`] or [`MessageLoop::run()`].
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
-    let running = MESSAGE_LOOP_RUNNING.get();
-    assert!(
-        running,
-        "no message loop available: \
-        `spawn` must be called from within a future executed by `MessageLoop::block_on`"
-    );
     backend::spawn(future)
 }
