@@ -80,7 +80,8 @@ impl<T> Future for Task<T> {
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a message only window to run the taks.
-    let hwnd = create_window(Box::new(
+    let hwnd = create_window(
+        true,
         |_hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM| {
             if msg == MSG_ID_WAKE {
                 // Poll the tasks future
@@ -104,7 +105,7 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
                 None
             }
         },
-    ));
+    );
 
     let task = Arc::new(TaskInner::new(hwnd, future));
 
