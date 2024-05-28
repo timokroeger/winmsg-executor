@@ -30,10 +30,17 @@ pub struct MessageLoop {
     _not_send: PhantomData<*const ()>,
 }
 
+impl Default for MessageLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageLoop {
     /// Creates a message queue for the current thread but does not run the
     /// dispatch loop for it yet.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             _not_send: PhantomData,
         }
@@ -47,8 +54,16 @@ impl MessageLoop {
     ///
     /// Any spawned tasks will be suspended after `block_on` returns. Calling
     /// `block_on` again will resume previously spawned tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the message loops is running already. This happens when
+    /// `block_on` is called from async tasks running on this executor.
     pub fn block_on<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> T {
-        assert!(!MESSAGE_LOOP_RUNNING.replace(true), "a message loop is running already");
+        assert!(
+            !MESSAGE_LOOP_RUNNING.replace(true),
+            "a message loop is running already"
+        );
 
         // Any modal window (i.e. a right-click menu) blocks the main message loop
         // and dispatches messages internally. To keep the executor running use a
@@ -96,7 +111,7 @@ impl MessageLoop {
     }
 
     /// Runs the message loop.
-    /// 
+    ///
     /// Executes previously [`spawn`]ed tasks.
     pub fn run(&self) {
         self.block_on(async {});

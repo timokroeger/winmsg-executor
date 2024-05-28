@@ -19,7 +19,7 @@ fn get_instance_handle() -> HINSTANCE {
     extern "C" {
         static __ImageBase: u8;
     }
-    unsafe { &__ImageBase as *const _ as _ }
+    unsafe { ptr::from_ref(&__ImageBase) as _ }
 }
 
 struct SubClassInformation {
@@ -63,7 +63,7 @@ where
             if message_only { HWND_MESSAGE } else { 0 },
             0,
             get_instance_handle(),
-            (&subclassinfo as *const SubClassInformation).cast(),
+            ptr::from_ref(&subclassinfo).cast(),
         )
     }
 }

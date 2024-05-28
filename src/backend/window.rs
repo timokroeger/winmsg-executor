@@ -10,7 +10,7 @@ use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
 use crate::util::create_window;
 
-pub fn dispatch(_msg: &MSG) -> bool {
+pub const fn dispatch(_msg: &MSG) -> bool {
     // Forward all message and let the operating system handle dispatching of
     // messages to the matching wndproc.
     false
@@ -73,12 +73,13 @@ impl<T> Future for Task<T> {
         match task_state.replace(TaskState::Invalid) {
             TaskState::Invalid => panic!(),
             TaskState::Running(future, waker) => {
-                let waker = waker
-                    .map(|mut w| {
+                let waker = waker.map_or_else(
+                    || cx.waker().clone(),
+                    |mut w| {
                         w.clone_from(cx.waker());
                         w
-                    })
-                    .unwrap_or_else(|| cx.waker().clone());
+                    },
+                );
                 task_state.set(TaskState::Running(future, Some(waker)));
                 Poll::Pending
             }
@@ -102,7 +103,9 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
                         .as_mut()
                         .poll(&mut Context::from_waker(&Waker::from(task.clone())))
                     {
-                        result_waker.map(Waker::wake);
+                        if let Some(w) = result_waker {
+                            w.wake();
+                        }
                         TaskState::Finished(result)
                     } else {
                         TaskState::Running(future, result_waker)
