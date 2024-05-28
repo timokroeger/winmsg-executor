@@ -1,10 +1,8 @@
 //! Window wrapper which allows to move state into the `wndproc` closure.
 
-use std::{ffi::CStr, ptr};
+use std::{ptr, sync::Once};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
-
-const CLASS_NAME: &CStr = c"winmsg-executor";
 
 // Taken from:
 // https://github.com/rust-windowing/winit/blob/v0.30.0/src/platform_impl/windows/util.rs#L140
@@ -45,16 +43,18 @@ impl Window {
     where
         T: FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT> + 'static,
     {
-        // When creating multiple windows the `RegisterClassA()` call only succeeds
-        // the first time, after which the class exists and can be reused.
-        // This means class registration API behaves like a `OnceLock`.
+        let class_name = c"winmsg-executor".as_ptr().cast();
+
         // A class must only be unregistered when it was registered from a DLL which
         // is unloaded during program execution: For now an unsupported use case.
-        let mut wnd_class: WNDCLASSA = unsafe { std::mem::zeroed() };
-        wnd_class.lpfnWndProc = Some(wndproc_setup);
-        wnd_class.hInstance = get_instance_handle();
-        wnd_class.lpszClassName = CLASS_NAME.as_ptr().cast();
-        unsafe { RegisterClassA(&wnd_class) };
+        static CLASS_REGISTRATION: Once = Once::new();
+        CLASS_REGISTRATION.call_once(|| {
+            let mut wnd_class: WNDCLASSA = unsafe { std::mem::zeroed() };
+            wnd_class.lpfnWndProc = Some(wndproc_setup);
+            wnd_class.hInstance = get_instance_handle();
+            wnd_class.lpszClassName = class_name;
+            unsafe { RegisterClassA(&wnd_class) };
+        });
 
         // Pass the closure as user data to our typed window process which.
         let subclassinfo = SubClassInformation {
@@ -65,7 +65,7 @@ impl Window {
         let hwnd = unsafe {
             CreateWindowExA(
                 0,
-                CLASS_NAME.as_ptr().cast(),
+                class_name,
                 ptr::null(),
                 0,
                 CW_USEDEFAULT,
