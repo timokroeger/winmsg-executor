@@ -8,7 +8,7 @@ use std::{
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
-use crate::util::create_window;
+use crate::util::Window;
 
 pub const fn dispatch(_msg: &MSG) -> bool {
     // Forward all message and let the operating system handle dispatching of
@@ -25,7 +25,7 @@ enum TaskState<T> {
 }
 
 struct TaskInner<T> {
-    hwnd: HWND,
+    window: Window,
     state: Cell<TaskState<T>>,
 }
 
@@ -36,9 +36,9 @@ unsafe impl<T> Send for TaskInner<T> {}
 unsafe impl<T> Sync for TaskInner<T> {}
 
 impl<T> TaskInner<T> {
-    fn new(hwnd: HWND, future: impl Future<Output = T> + 'static) -> Self {
+    fn new(window: Window, future: impl Future<Output = T> + 'static) -> Self {
         Self {
-            hwnd,
+            window,
             state: Cell::new(TaskState::Running(Box::pin(future), None)),
         }
     }
@@ -53,13 +53,14 @@ impl<T> Wake for TaskInner<T> {
         // task was created on) decide if a task needs to be polled.
         // `Arc<Self>` keeps the target window alive for as long as wakers for
         // the task exist.
-        unsafe { PostMessageA(self.hwnd, MSG_ID_WAKE, 0, Arc::into_raw(self) as isize) };
-    }
-}
-
-impl<T> Drop for TaskInner<T> {
-    fn drop(&mut self) {
-        unsafe { DestroyWindow(self.hwnd) };
+        unsafe {
+            PostMessageA(
+                self.window.hwnd(),
+                MSG_ID_WAKE,
+                0,
+                Arc::into_raw(self) as isize,
+            )
+        };
     }
 }
 
@@ -90,7 +91,7 @@ impl<T> Future for Task<T> {
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a message only window to run the tasks.
-    let hwnd = create_window(
+    let window = Window::new(
         true,
         |_hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM| {
             if msg == MSG_ID_WAKE {
@@ -119,7 +120,7 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
         },
     );
 
-    let task = Arc::new(TaskInner::new(hwnd, future));
+    let task = Arc::new(TaskInner::new(window, future));
 
     // Trigger initial poll.
     Waker::from(task.clone()).wake();

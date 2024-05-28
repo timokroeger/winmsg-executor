@@ -27,44 +27,63 @@ struct SubClassInformation {
     user_data: *const (),
 }
 
-/// The window must be destroyed with a call to `DestroyWindow()` manually,
-/// either using the returned handle or from within the `f` closure.
-pub fn create_window<T>(message_only: bool, f: T) -> HWND
-where
-    T: FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT> + 'static,
-{
-    // When creating multiple windows the `RegisterClassA()` call only succeeds
-    // the first time, after which the class exists and can be reused.
-    // This means class registration API behaves like a `OnceLock`.
-    // A class must only be unregistered when it was registered from a DLL which
-    // is unloaded during program execution: For now an unsupported use case.
-    let mut wnd_class: WNDCLASSA = unsafe { std::mem::zeroed() };
-    wnd_class.lpfnWndProc = Some(wndproc_setup);
-    wnd_class.hInstance = get_instance_handle();
-    wnd_class.lpszClassName = CLASS_NAME.as_ptr().cast();
-    unsafe { RegisterClassA(&wnd_class) };
+#[derive(Debug)]
+pub struct Window {
+    hwnd: HWND,
+}
 
-    // Pass the closure as user data to our typed window process which.
-    let subclassinfo = SubClassInformation {
-        wndproc: wndproc::<T>,
-        user_data: Box::into_raw(Box::new(f)).cast(),
-    };
+impl Drop for Window {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.hwnd) };
+    }
+}
 
-    unsafe {
-        CreateWindowExA(
-            0,
-            CLASS_NAME.as_ptr().cast(),
-            ptr::null(),
-            0,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            if message_only { HWND_MESSAGE } else { 0 },
-            0,
-            get_instance_handle(),
-            ptr::from_ref(&subclassinfo).cast(),
-        )
+impl Window {
+    /// The window must be destroyed with a call to `DestroyWindow()` manually,
+    /// either using the returned handle or from within the `f` closure.
+    pub fn new<T>(message_only: bool, f: T) -> Self
+    where
+        T: FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT> + 'static,
+    {
+        // When creating multiple windows the `RegisterClassA()` call only succeeds
+        // the first time, after which the class exists and can be reused.
+        // This means class registration API behaves like a `OnceLock`.
+        // A class must only be unregistered when it was registered from a DLL which
+        // is unloaded during program execution: For now an unsupported use case.
+        let mut wnd_class: WNDCLASSA = unsafe { std::mem::zeroed() };
+        wnd_class.lpfnWndProc = Some(wndproc_setup);
+        wnd_class.hInstance = get_instance_handle();
+        wnd_class.lpszClassName = CLASS_NAME.as_ptr().cast();
+        unsafe { RegisterClassA(&wnd_class) };
+
+        // Pass the closure as user data to our typed window process which.
+        let subclassinfo = SubClassInformation {
+            wndproc: wndproc::<T>,
+            user_data: Box::into_raw(Box::new(f)).cast(),
+        };
+
+        let hwnd = unsafe {
+            CreateWindowExA(
+                0,
+                CLASS_NAME.as_ptr().cast(),
+                ptr::null(),
+                0,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                if message_only { HWND_MESSAGE } else { 0 },
+                0,
+                get_instance_handle(),
+                ptr::from_ref(&subclassinfo).cast(),
+            )
+        };
+
+        Self { hwnd }
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
     }
 }
 
