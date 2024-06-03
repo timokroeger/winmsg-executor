@@ -25,6 +25,14 @@ struct SubClassInformation {
     user_data: *const (),
 }
 
+#[derive(Debug, Clone)]
+pub struct WindowMessage {
+    pub hwnd: HWND,
+    pub msg: u32,
+    pub wparam: WPARAM,
+    pub lparam: LPARAM,
+}
+
 #[derive(Debug)]
 pub struct Window {
     hwnd: HWND,
@@ -41,7 +49,7 @@ impl Window {
     /// either using the returned handle or from within the `f` closure.
     pub fn new<T>(message_only: bool, f: T) -> Self
     where
-        T: FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT> + 'static,
+        T: FnMut(WindowMessage) -> Option<LRESULT> + 'static,
     {
         let class_name = c"winmsg-executor".as_ptr().cast();
 
@@ -118,7 +126,7 @@ unsafe extern "system" fn wndproc<T>(
     lparam: LPARAM,
 ) -> LRESULT
 where
-    T: FnMut(HWND, u32, WPARAM, LPARAM) -> Option<LRESULT> + 'static,
+    T: FnMut(WindowMessage) -> Option<LRESULT> + 'static,
 {
     let wndproc = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut T;
     if msg == WM_NCDESTROY {
@@ -128,7 +136,12 @@ where
         0
     } else {
         // Call this windows closure.
-        (*wndproc)(hwnd, msg, wparam, lparam)
-            .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+        (*wndproc)(WindowMessage {
+            hwnd,
+            msg,
+            wparam,
+            lparam,
+        })
+        .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
     }
 }

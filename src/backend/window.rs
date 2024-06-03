@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::util::Window;
 
@@ -91,34 +91,31 @@ impl<T> Future for Task<T> {
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a message only window to run the tasks.
-    let window = Window::new(
-        true,
-        |_hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM| {
-            if msg == MSG_ID_WAKE {
-                // Poll the tasks future
-                let task = unsafe { Arc::from_raw(lparam as *const TaskInner<T>) };
-                if let TaskState::Running(mut future, result_waker) =
-                    task.state.replace(TaskState::Invalid)
+    let window = Window::new(true, |msg| {
+        if msg.msg == MSG_ID_WAKE {
+            // Poll the tasks future
+            let task = unsafe { Arc::from_raw(msg.lparam as *const TaskInner<T>) };
+            if let TaskState::Running(mut future, result_waker) =
+                task.state.replace(TaskState::Invalid)
+            {
+                let new_state = if let Poll::Ready(result) = future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&Waker::from(task.clone())))
                 {
-                    let new_state = if let Poll::Ready(result) = future
-                        .as_mut()
-                        .poll(&mut Context::from_waker(&Waker::from(task.clone())))
-                    {
-                        if let Some(w) = result_waker {
-                            w.wake();
-                        }
-                        TaskState::Finished(result)
-                    } else {
-                        TaskState::Running(future, result_waker)
-                    };
-                    task.state.set(new_state);
-                }
-                Some(0)
-            } else {
-                None
+                    if let Some(w) = result_waker {
+                        w.wake();
+                    }
+                    TaskState::Finished(result)
+                } else {
+                    TaskState::Running(future, result_waker)
+                };
+                task.state.set(new_state);
             }
-        },
-    );
+            Some(0)
+        } else {
+            None
+        }
+    });
 
     let task = Arc::new(TaskInner::new(window, future));
 
