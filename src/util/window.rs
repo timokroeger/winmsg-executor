@@ -1,6 +1,6 @@
 //! Window wrapper which allows to move state into the `wndproc` closure.
 
-use std::{ptr, sync::Once};
+use std::{cell::RefCell, ptr, sync::Once};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
@@ -22,6 +22,8 @@ fn get_instance_handle() -> HINSTANCE {
 
 struct SubClassInformation {
     wndproc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+    // Erased pointer type allows `wndproc_setup` to be free of generics.
+    // It simply forwards the pointer and does not need to know type details.
     user_data: *const (),
 }
 
@@ -34,22 +36,21 @@ pub struct WindowMessage {
 }
 
 #[derive(Debug)]
-pub struct Window {
+pub struct Window<S> {
     hwnd: HWND,
+    shared_state_ptr: *const S,
 }
 
-impl Drop for Window {
+impl<S> Drop for Window<S> {
     fn drop(&mut self) {
         unsafe { DestroyWindow(self.hwnd) };
     }
 }
 
-impl Window {
-    /// The window must be destroyed with a call to `DestroyWindow()` manually,
-    /// either using the returned handle or from within the `f` closure.
-    pub fn new<T>(message_only: bool, f: T) -> Self
+impl<S> Window<S> {
+    pub fn new<F>(message_only: bool, shared_state: S, wndproc: F) -> Self
     where
-        T: FnMut(WindowMessage) -> Option<LRESULT> + 'static,
+        F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
     {
         let class_name = c"winmsg-executor".as_ptr().cast();
 
@@ -64,10 +65,13 @@ impl Window {
             unsafe { RegisterClassA(&wnd_class) };
         });
 
-        // Pass the closure as user data to our typed window process which.
+        // Pass the closure and state as user data to our typed window process which.
+        let user_data = Box::new((shared_state, RefCell::new(wndproc)));
+        let shared_state_ptr = ptr::from_ref(&user_data.0);
+
         let subclassinfo = SubClassInformation {
-            wndproc: wndproc::<T>,
-            user_data: Box::into_raw(Box::new(f)).cast(),
+            wndproc: wndproc_typed::<S, F>,
+            user_data: Box::into_raw(user_data).cast(),
         };
 
         let hwnd = unsafe {
@@ -87,11 +91,18 @@ impl Window {
             )
         };
 
-        Self { hwnd }
+        Self {
+            hwnd,
+            shared_state_ptr,
+        }
     }
 
     pub fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    pub fn shared_state(&self) -> &S {
+        unsafe { &*self.shared_state_ptr }
     }
 }
 
@@ -119,29 +130,40 @@ unsafe extern "system" fn wndproc_setup(
     }
 }
 
-unsafe extern "system" fn wndproc<T>(
+unsafe extern "system" fn wndproc_typed<S, F>(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT
 where
-    T: FnMut(WindowMessage) -> Option<LRESULT> + 'static,
+    F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
 {
-    let wndproc = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut T;
+    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, RefCell<F>));
+
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
-        // the windows is destroyed. Deallocate the window context.
-        drop(Box::from_raw(wndproc));
-        0
-    } else {
-        // Call this windows closure.
-        (*wndproc)(WindowMessage {
+        // the windows is destroyed. Deallocate the window user data.
+        drop(Box::from_raw(user_data));
+        return 0;
+    }
+
+    // Detect when `wndproc` is re-entered, which can happen when the user
+    // provided handler creates a modal dialog (e.g. a popup-menu). Rust rules
+    // do not allow us to create a second mutable reference to the user provided
+    // handler. Run the default windows procedure instead.
+    let Ok(mut wndproc) = user_data.1.try_borrow_mut() else {
+        return DefWindowProcA(hwnd, msg, wparam, lparam);
+    };
+
+    wndproc(
+        &user_data.0,
+        WindowMessage {
             hwnd,
             msg,
             wparam,
             lparam,
-        })
-        .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
-    }
+        },
+    )
+    .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
 }

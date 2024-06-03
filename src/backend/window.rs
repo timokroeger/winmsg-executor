@@ -25,7 +25,7 @@ enum TaskState<T> {
 }
 
 struct TaskInner<T> {
-    window: Window,
+    window: Window<()>,
     state: Cell<TaskState<T>>,
 }
 
@@ -36,7 +36,7 @@ unsafe impl<T> Send for TaskInner<T> {}
 unsafe impl<T> Sync for TaskInner<T> {}
 
 impl<T> TaskInner<T> {
-    fn new(window: Window, future: impl Future<Output = T> + 'static) -> Self {
+    fn new(window: Window<()>, future: impl Future<Output = T> + 'static) -> Self {
         Self {
             window,
             state: Cell::new(TaskState::Running(Box::pin(future), None)),
@@ -91,7 +91,7 @@ impl<T> Future for Task<T> {
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a message only window to run the tasks.
-    let window = Window::new(true, |msg| {
+    let window = Window::new(true, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             // Poll the tasks future
             let task = unsafe { Arc::from_raw(msg.lparam as *const TaskInner<T>) };
