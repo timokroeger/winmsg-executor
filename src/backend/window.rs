@@ -91,7 +91,7 @@ impl<T> Future for Task<T> {
 
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a message only window to run the tasks.
-    let window = Window::new(true, (), |_, msg| {
+    let window = Window::new_reentrant(true, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             // Poll the tasks future
             let task = unsafe { Arc::from_raw(msg.lparam as *const TaskInner<T>) };

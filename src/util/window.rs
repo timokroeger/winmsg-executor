@@ -52,6 +52,21 @@ impl<S> Window<S> {
     where
         F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
     {
+        let wndproc = RefCell::new(wndproc);
+        Self::new_reentrant(message_only, shared_state, move |state, msg| {
+            // Detect when `wndproc` is re-entered, which can happen when the user
+            // provided handler creates a modal dialog (e.g. a popup-menu). Rust rules
+            // do not allow us to create a second mutable reference to the user provided
+            // handler. Run the default windows procedure instead.
+            let mut wndproc = wndproc.try_borrow_mut().ok()?;
+            wndproc(state, msg)
+        })
+    }
+
+    pub fn new_reentrant<F>(message_only: bool, shared_state: S, wndproc: F) -> Self
+    where
+        F: Fn(&S, WindowMessage) -> Option<LRESULT> + 'static,
+    {
         let class_name = c"winmsg-executor".as_ptr().cast();
 
         // A class must only be unregistered when it was registered from a DLL which
@@ -66,7 +81,7 @@ impl<S> Window<S> {
         });
 
         // Pass the closure and state as user data to our typed window process which.
-        let user_data = Box::new((shared_state, RefCell::new(wndproc)));
+        let user_data = Box::new((shared_state, wndproc));
         let shared_state_ptr = ptr::from_ref(&user_data.0);
 
         let subclassinfo = SubClassInformation {
@@ -137,9 +152,9 @@ unsafe extern "system" fn wndproc_typed<S, F>(
     lparam: LPARAM,
 ) -> LRESULT
 where
-    F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
+    F: Fn(&S, WindowMessage) -> Option<LRESULT> + 'static,
 {
-    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, RefCell<F>));
+    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, F));
 
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
@@ -148,14 +163,7 @@ where
         return 0;
     }
 
-    // Detect when `wndproc` is re-entered, which can happen when the user
-    // provided handler creates a modal dialog (e.g. a popup-menu). Rust rules
-    // do not allow us to create a second mutable reference to the user provided
-    // handler. Run the default windows procedure instead.
-    let Ok(mut wndproc) = user_data.1.try_borrow_mut() else {
-        return DefWindowProcA(hwnd, msg, wparam, lparam);
-    };
-
+    let wndproc = &user_data.1;
     wndproc(
         &user_data.0,
         WindowMessage {
