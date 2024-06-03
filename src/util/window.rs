@@ -47,8 +47,15 @@ impl<S> Drop for Window<S> {
     }
 }
 
+#[derive(Debug)]
+pub struct WindowCreationError;
+
 impl<S> Window<S> {
-    pub fn new<F>(message_only: bool, shared_state: S, wndproc: F) -> Self
+    pub fn new<F>(
+        message_only: bool,
+        shared_state: S,
+        wndproc: F,
+    ) -> Result<Self, WindowCreationError>
     where
         F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
     {
@@ -63,7 +70,11 @@ impl<S> Window<S> {
         })
     }
 
-    pub fn new_reentrant<F>(message_only: bool, shared_state: S, wndproc: F) -> Self
+    pub fn new_reentrant<F>(
+        message_only: bool,
+        shared_state: S,
+        wndproc: F,
+    ) -> Result<Self, WindowCreationError>
     where
         F: Fn(&S, WindowMessage) -> Option<LRESULT> + 'static,
     {
@@ -106,9 +117,13 @@ impl<S> Window<S> {
             )
         };
 
-        Self {
-            hwnd,
-            shared_state_ptr,
+        if hwnd != 0 {
+            Ok(Self {
+                hwnd,
+                shared_state_ptr,
+            })
+        } else {
+            Err(WindowCreationError)
         }
     }
 
@@ -139,7 +154,8 @@ unsafe extern "system" fn wndproc_setup(
         // https://devblogs.microsoft.com/oldnewthing/20191014-00/?p=102992
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, subclassinfo.user_data as isize);
 
-        1 // Continue with window creation
+        // Forward this message to the freshly registered subclass wndproc.
+        SendMessageA(hwnd, msg, wparam, lparam)
     } else {
         DefWindowProcA(hwnd, msg, wparam, lparam)
     }
@@ -156,15 +172,8 @@ where
 {
     let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, F));
 
-    if msg == WM_NCDESTROY {
-        // This is the very last message received by this function before
-        // the windows is destroyed. Deallocate the window user data.
-        drop(Box::from_raw(user_data));
-        return 0;
-    }
-
     let wndproc = &user_data.1;
-    wndproc(
+    let ret = wndproc(
         &user_data.0,
         WindowMessage {
             hwnd,
@@ -172,6 +181,21 @@ where
             wparam,
             lparam,
         },
-    )
-    .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+    );
+
+    if msg == WM_CLOSE {
+        // We manage the window lifetime ourselves. Prevent the default
+        // handler from calling `DestroyWindow()` to keep the state
+        // alloacted until the window wrapper struct is dropped.
+        return 0;
+    }
+
+    if msg == WM_NCDESTROY {
+        // This is the very last message received by this function before
+        // the windows is destroyed. Deallocate the window user data.
+        drop(Box::from_raw(user_data));
+        return 0;
+    }
+
+    ret.unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
 }

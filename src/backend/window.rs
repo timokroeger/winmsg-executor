@@ -115,7 +115,7 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
         } else {
             None
         }
-    });
+    }).unwrap();
 
     let task = Arc::new(TaskInner::new(window, future));
 
