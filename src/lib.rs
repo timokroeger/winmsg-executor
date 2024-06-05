@@ -58,8 +58,27 @@ impl MessageLoop {
     /// # Panics
     ///
     /// Panics when the message loops is running already. This happens when
-    /// `block_on` is called from async tasks running on this executor.
+    /// `block_on` or `run` is called from async tasks running on this executor.
     pub fn block_on<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> T {
+        // Wrap the future so it quits the message loop when finished.
+        let task = backend::spawn(async move {
+            let result = future.await;
+            unsafe { PostQuitMessage(0) };
+            result
+        });
+        self.run();
+        poll_assume_ready(task)
+    }
+
+    /// Runs the message loop.
+    ///
+    /// Executes previously [`spawn`]ed tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the message loops is running already. This happens when
+    /// `block_on` or `run` is called from async tasks running on this executor.
+    pub fn run(&self) {
         assert!(
             !MESSAGE_LOOP_RUNNING.replace(true),
             "a message loop is running already"
@@ -78,14 +97,6 @@ impl MessageLoop {
         let hook =
             unsafe { SetWindowsHookExA(WH_MSGFILTER, Some(hook_proc), 0, GetCurrentThreadId()) };
 
-        // Wrap the future so it quits the message loop when finished.
-        let task = backend::spawn(async move {
-            let result = future.await;
-            unsafe { PostQuitMessage(0) };
-            result
-        });
-
-        // Run the message loop.
         loop {
             let mut msg = MaybeUninit::uninit();
             unsafe {
@@ -106,15 +117,6 @@ impl MessageLoop {
 
         unsafe { UnhookWindowsHookEx(hook) };
         MESSAGE_LOOP_RUNNING.set(false);
-
-        poll_assume_ready(task)
-    }
-
-    /// Runs the message loop.
-    ///
-    /// Executes previously [`spawn`]ed tasks.
-    pub fn run(&self) {
-        self.block_on(async {});
     }
 }
 
