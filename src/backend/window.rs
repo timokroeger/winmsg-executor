@@ -25,7 +25,7 @@ enum TaskState<F: Future> {
     Closed,
 }
 
-struct TaskInner<F: Future> {
+struct Task<F: Future> {
     window: Window<()>,
     state: Cell<TaskState<F>>,
 }
@@ -33,10 +33,10 @@ struct TaskInner<F: Future> {
 // SAFETY: The wake implementation (which requires `Send` and `Sync`) only uses
 // the window handle and passes it to a safe function call. All other state is
 // only accessed from one thread.
-unsafe impl<F: Future> Send for TaskInner<F> {}
-unsafe impl<F: Future> Sync for TaskInner<F> {}
+unsafe impl<F: Future> Send for Task<F> {}
+unsafe impl<F: Future> Sync for Task<F> {}
 
-impl<F: Future> Wake for TaskInner<F> {
+impl<F: Future> Wake for Task<F> {
     fn wake(self: Arc<Self>) {
         // Ideally the waker would know if the task has completed to decide if
         // its necessary to send a wake message. But that also means access to
@@ -56,13 +56,15 @@ impl<F: Future> Wake for TaskInner<F> {
     }
 }
 
-pub struct Task<F: Future>(Arc<TaskInner<F>>);
+pub struct JoinHandle<F: Future> {
+    task: Arc<Task<F>>,
+}
 
-impl<F: Future> Future for Task<F> {
+impl<F: Future> Future for JoinHandle<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let task_state = &self.0.state;
+        let task_state = &self.task.state;
         match task_state.replace(TaskState::Closed) {
             TaskState::Closed => panic!(),
             TaskState::Running(future, waker) => {
@@ -81,12 +83,12 @@ impl<F: Future> Future for Task<F> {
     }
 }
 
-pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
+pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
     // Create a message only window to run the tasks.
     let window = Window::new_reentrant(true, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             // Poll the tasks future
-            let task = unsafe { Arc::from_raw(msg.lparam as *const TaskInner<F>) };
+            let task = unsafe { Arc::from_raw(msg.lparam as *const Task<F>) };
             if let TaskState::Running(mut future, result_waker) =
                 task.state.replace(TaskState::Closed)
             {
@@ -110,7 +112,7 @@ pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
     })
     .unwrap();
 
-    let task = Arc::new(TaskInner {
+    let task = Arc::new(Task {
         window,
         state: Cell::new(TaskState::Running(future, None)),
     });
@@ -118,5 +120,5 @@ pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
     // Trigger initial poll.
     Waker::from(task.clone()).wake();
 
-    Task(task)
+    JoinHandle { task }
 }

@@ -24,7 +24,7 @@ pub fn dispatch(msg: &MSG) -> bool {
     }
 }
 
-pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
+pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
     // Its important to get the current thread id *outside* of the `schedule`
     // closure which can run from a different.
     let thread_id = unsafe { GetCurrentThreadId() };
@@ -43,8 +43,8 @@ pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
     // Trigger a first poll.
     runnable.schedule();
 
-    Task {
-        inner: ManuallyDrop::new(task),
+    JoinHandle {
+        task: ManuallyDrop::new(task),
     }
 }
 
@@ -59,22 +59,22 @@ fn spawn_local<F: Future + 'static>(
 }
 
 // Use a newtype around `async-task` task type to adjust its drop behavior.
-pub struct Task<F: Future> {
-    inner: ManuallyDrop<async_task::Task<F::Output>>,
+pub struct JoinHandle<F: Future> {
+    task: ManuallyDrop<async_task::Task<F::Output>>,
 }
 
 // Keep the task running when dropped.
-impl<F: Future> Drop for Task<F> {
+impl<F: Future> Drop for JoinHandle<F> {
     fn drop(&mut self) {
-        let task = unsafe { ManuallyDrop::take(&mut self.inner) };
+        let task = unsafe { ManuallyDrop::take(&mut self.task) };
         task.detach();
     }
 }
 
-impl<F: Future> Future for Task<F> {
+impl<F: Future> Future for JoinHandle<F> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        pin!(&mut *self.inner).poll(cx)
+        pin!(&mut *self.task).poll(cx)
     }
 }
