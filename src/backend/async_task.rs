@@ -24,7 +24,7 @@ pub fn dispatch(msg: &MSG) -> bool {
     }
 }
 
-pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
+pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
     // Its important to get the current thread id *outside* of the `schedule`
     // closure which can run from a different.
     let thread_id = unsafe { GetCurrentThreadId() };
@@ -48,10 +48,10 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     }
 }
 
-fn spawn_local<T: 'static>(
-    future: impl Future<Output = T> + 'static,
+fn spawn_local<F: Future + 'static>(
+    future: F,
     schedule: impl Schedule + Send + Sync + 'static,
-) -> (Runnable, async_task::Task<T>) {
+) -> (Runnable, async_task::Task<F::Output>) {
     // SAFETY: The `future` does not need to be `Send` because the thread that
     // receives the runnable is our own. All other safety properties are ensured
     // by the function signature.
@@ -59,20 +59,20 @@ fn spawn_local<T: 'static>(
 }
 
 // Use a newtype around `async-task` task type to adjust its drop behavior.
-pub struct Task<T> {
-    inner: ManuallyDrop<async_task::Task<T>>,
+pub struct Task<F: Future> {
+    inner: ManuallyDrop<async_task::Task<F::Output>>,
 }
 
 // Keep the task running when dropped.
-impl<T> Drop for Task<T> {
+impl<F: Future> Drop for Task<F> {
     fn drop(&mut self) {
         let task = unsafe { ManuallyDrop::take(&mut self.inner) };
         task.detach();
     }
 }
 
-impl<T> Future for Task<T> {
-    type Output = T;
+impl<F: Future> Future for Task<F> {
+    type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         pin!(&mut *self.inner).poll(cx)

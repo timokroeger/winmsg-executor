@@ -138,13 +138,13 @@ fn poll_assume_ready<T>(future: impl Future<Output = T>) -> T {
 
 /// If a `Task` is dropped, then the task continues running in the background
 /// and its return value is lost.
-pub type Task<T> = backend::Task<T>;
+pub type Task<F> = backend::Task<F>;
 
 /// Spawns a new future on the current thread.
 ///
 /// This function may be used to spawn tasks when the message loop is not
 /// running. The provided future will start running once the message loop
 /// is entered with [`MessageLoop::block_on()`] or [`MessageLoop::run()`].
-pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
+pub fn spawn<F: Future + 'static>(future: F) -> Task<F> {
     backend::spawn(future)
 }
