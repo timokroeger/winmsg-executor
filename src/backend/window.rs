@@ -1,6 +1,7 @@
 use std::{
-    cell::Cell,
+    cell::UnsafeCell,
     future::Future,
+    mem,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
@@ -27,7 +28,7 @@ enum TaskState<F: Future> {
 
 struct Task<F: Future> {
     window: Window<()>,
-    state: Cell<TaskState<F>>,
+    state: UnsafeCell<TaskState<F>>,
 }
 
 // SAFETY: The wake implementation (which requires `Send` and `Sync`) only uses
@@ -64,21 +65,20 @@ impl<F: Future> Future for JoinHandle<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let task_state = &self.task.state;
-        match task_state.replace(TaskState::Closed) {
-            TaskState::Closed => panic!(),
-            TaskState::Running(future, waker) => {
-                let waker = waker.map_or_else(
-                    || cx.waker().clone(),
-                    |mut w| {
-                        w.clone_from(cx.waker());
-                        w
-                    },
-                );
-                task_state.set(TaskState::Running(future, Some(waker)));
-                Poll::Pending
+        let task_state = unsafe { &mut *self.task.state.get() };
+
+        if let TaskState::Running(_, waker) = task_state {
+            match waker {
+                Some(waker) if waker.will_wake(cx.waker()) => {}
+                waker => *waker = Some(cx.waker().clone()),
             }
-            TaskState::Completed(result) => Poll::Ready(result),
+            return Poll::Pending;
+        }
+
+        if let TaskState::Completed(result) = mem::replace(task_state, TaskState::Closed) {
+            Poll::Ready(result)
+        } else {
+            panic!("future polled after ready");
         }
     }
 }
@@ -89,22 +89,20 @@ pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
         if msg.msg == MSG_ID_WAKE {
             // Poll the tasks future
             let task = unsafe { Arc::from_raw(msg.lparam as *const Task<F>) };
-            if let TaskState::Running(mut future, result_waker) =
-                task.state.replace(TaskState::Closed)
-            {
-                let future_pinned = unsafe { Pin::new_unchecked(&mut future) };
-                let new_state = if let Poll::Ready(result) =
+            let task_state = unsafe { &mut *task.state.get() };
+
+            if let TaskState::Running(ref mut future, ref mut waker) = task_state {
+                let future_pinned = unsafe { Pin::new_unchecked(future) };
+                if let Poll::Ready(result) =
                     future_pinned.poll(&mut Context::from_waker(&Waker::from(task.clone())))
                 {
-                    if let Some(w) = result_waker {
+                    if let Some(w) = waker.take() {
                         w.wake();
                     }
-                    TaskState::Completed(result)
-                } else {
-                    TaskState::Running(future, result_waker)
-                };
-                task.state.set(new_state);
+                    *task_state = TaskState::Completed(result);
+                }
             }
+
             Some(0)
         } else {
             None
@@ -114,7 +112,7 @@ pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
 
     let task = Arc::new(Task {
         window,
-        state: Cell::new(TaskState::Running(future, None)),
+        state: UnsafeCell::new(TaskState::Running(future, None)),
     });
 
     // Trigger initial poll.
