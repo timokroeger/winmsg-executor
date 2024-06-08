@@ -1,5 +1,3 @@
-//! Window wrapper which allows to move state into the `wndproc` closure.
-
 use std::{cell::RefCell, ptr, sync::Once};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -27,6 +25,7 @@ struct SubClassInformation {
     user_data: *const (),
 }
 
+/// Wrapper for the argements to the [`WNDPROC callback function`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc).
 #[derive(Debug, Clone)]
 pub struct WindowMessage {
     pub hwnd: HWND,
@@ -35,6 +34,7 @@ pub struct WindowMessage {
     pub lparam: LPARAM,
 }
 
+/// Owned window handle. Dropping the handle destroys the window.
 #[derive(Debug)]
 pub struct Window<S> {
     hwnd: HWND,
@@ -47,10 +47,32 @@ impl<S> Drop for Window<S> {
     }
 }
 
+/// Window could not be created.
+///
+/// Possible failure reasons:
+/// * `WM_NCCREATE` massege was handled but did not return 0
+/// * `WM_CREATE` message was handled but returned -1
 #[derive(Debug)]
 pub struct WindowCreationError;
 
 impl<S> Window<S> {
+    /// Creates a new window with a `wndproc` closure.
+    ///
+    /// The `shared_state` parameter will be allocated alongside closure with
+    /// a `'static` lifetime. Allows for convenient access to variables from
+    /// both inside and outside of the closure without an extra `Rc<State>`.
+    /// Use the [`Window::shared_state()`] method to access the state from the
+    /// outside.
+    ///
+    /// [Message-Only Windows] are useful for windows that do not need to be
+    /// visible nor need access to broadcast messages from the desktop.
+    ///
+    /// [Message-Only Windows]: https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+    ///
+    /// Internally uses a `RefCell` for the closure to prevent it from being
+    /// re-entered by nested message loops (e.g. from modal dialogs). Forwards
+    /// nested messages to the default wndproc procudere. If you required more
+    /// control for those scenarios use [`Window::new_reentrant()`].
     pub fn new<F>(
         message_only: bool,
         shared_state: S,
@@ -70,6 +92,7 @@ impl<S> Window<S> {
         })
     }
 
+    /// Same as [`Window::new()`] but allows the closure to be re-entered.
     pub fn new_reentrant<F>(
         message_only: bool,
         shared_state: S,
@@ -91,7 +114,7 @@ impl<S> Window<S> {
             unsafe { RegisterClassA(&wnd_class) };
         });
 
-        // Pass the closure and state as user data to our typed window process which.
+        // Pass the closure and state as user data to our typed window process.
         let user_data = Box::new((shared_state, wndproc));
         let shared_state_ptr = ptr::from_ref(&user_data.0);
 
@@ -113,6 +136,9 @@ impl<S> Window<S> {
                 if message_only { HWND_MESSAGE } else { 0 },
                 0,
                 get_instance_handle(),
+                // The subclass info can be passed as pointer to the stack
+                // allocated variable because it will only be accessed during
+                // the `CreateWindowExA()` call and not afterwards.
                 ptr::from_ref(&subclassinfo).cast(),
             )
         };
@@ -127,10 +153,12 @@ impl<S> Window<S> {
         }
     }
 
+    /// Returns this windows raw window handle.
     pub fn hwnd(&self) -> HWND {
         self.hwnd
     }
 
+    /// Returns a reference to the state shared with the `wndproc` closure.
     pub fn shared_state(&self) -> &S {
         unsafe { &*self.shared_state_ptr }
     }
@@ -157,6 +185,9 @@ unsafe extern "system" fn wndproc_setup(
         // Forward this message to the freshly registered subclass wndproc.
         SendMessageA(hwnd, msg, wparam, lparam)
     } else {
+        // This code path is only reached for messages before `WM_NCCREATE`.
+        // On Windows 10/11 `WM_GETMINMAXINFO` is the first and only message
+        // before `WM_NCCREATE`.
         DefWindowProcA(hwnd, msg, wparam, lparam)
     }
 }

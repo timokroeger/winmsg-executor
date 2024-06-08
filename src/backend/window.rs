@@ -19,7 +19,7 @@ pub const fn dispatch(_msg: &MSG) -> bool {
 
 const MSG_ID_WAKE: u32 = WM_USER;
 
-// Use same terminology as `async-task` crate.
+// Same terminology as `async-task` crate.
 enum TaskState<F: Future> {
     Running(F, Option<Waker>),
     Completed(F::Output),
@@ -40,7 +40,7 @@ unsafe impl<F: Future> Sync for Task<F> {}
 impl<F: Future> Wake for Task<F> {
     fn wake(self: Arc<Self>) {
         // Ideally the waker would know if the task has completed to decide if
-        // its necessary to send a wake message. But that also means access to
+        // its necessary to send a wake message. But that also means access that
         // task state must be made thread safe. Instead, always post the wake
         // message and let the receiver side (which runs on the same thread the
         // task was created on) decide if a task needs to be polled.
