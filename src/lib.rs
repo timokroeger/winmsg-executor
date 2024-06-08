@@ -16,34 +16,6 @@ use windows_sys::Win32::{
     Foundation::*, System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*,
 };
 
-/// Runs a future to completion on the calling threads message loop.
-///
-/// This runs the provided future on the current thread, blocking until it
-/// is complete. Any tasks spawned which the future spawns internally will
-/// be executed no the same thread.
-///
-/// Any spawned tasks will be suspended after `block_on` returns. Calling
-/// `block_on` again will resume previously spawned tasks.
-///
-/// # Panics
-///
-/// Panics when the message loops is running already. This happens when
-/// `block_on` or `run` is called from async tasks running on this executor.
-pub fn block_on<F>(future: F) -> F::Output
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
-    // Wrap the future so it quits the message loop when finished.
-    let task = backend::spawn(async move {
-        let result = future.await;
-        unsafe { PostQuitMessage(0) };
-        result
-    });
-    run_message_loop();
-    poll_assume_ready(task)
-}
-
 /// Runs the message loop.
 ///
 /// Executes previously [`spawn`]ed tasks.
@@ -93,7 +65,45 @@ pub fn run_message_loop() {
     MESSAGE_LOOP_RUNNING.set(false);
 }
 
-fn poll_assume_ready<T>(future: impl Future<Output = T>) -> T {
+/// Quits the current threads message loop.
+pub fn quit_message_loop() {
+    unsafe { PostQuitMessage(0) };
+}
+
+/// Returned by [`block_on()`] when [`quit_message_loop()`] was called.
+#[derive(Debug, Clone, Copy)]
+pub struct QuitMessageLoop;
+
+/// Runs a future to completion on the calling threads message loop.
+///
+/// This runs the provided future on the current thread, blocking until it
+/// is complete. Any tasks spawned which the future spawns internally will
+/// be executed no the same thread.
+///
+/// Any spawned tasks will be suspended after `block_on` returns. Calling
+/// `block_on` again will resume previously spawned tasks.
+///
+/// # Panics
+///
+/// Panics when the message loops is running already. This happens when
+/// `block_on` or `run` is called from async tasks running on this executor.
+pub fn block_on<F>(future: F) -> Result<F::Output, QuitMessageLoop>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    // Wrap the future so it quits the message loop when finished.
+    let task = backend::spawn(async move {
+        let result = future.await;
+        quit_message_loop();
+        result
+    });
+    run_message_loop();
+    poll_ready(task).map_err(|_| QuitMessageLoop)
+}
+
+fn poll_ready<T>(future: impl Future<Output = T>) -> Result<T, ()> {
+    // TODO: wait for https://github.com/rust-lang/rust/issues/98286 to land.
     const NOOP_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
         |_| RawWaker::new(ptr::null(), &NOOP_WAKER_VTABLE),
         |_| (),
@@ -103,9 +113,9 @@ fn poll_assume_ready<T>(future: impl Future<Output = T>) -> T {
     let noop_waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &NOOP_WAKER_VTABLE)) };
     let future = pin!(future);
     if let Poll::Ready(result) = future.poll(&mut Context::from_waker(&noop_waker)) {
-        result
+        Ok(result)
     } else {
-        panic!();
+        Err(())
     }
 }
 

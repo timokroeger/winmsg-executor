@@ -31,6 +31,7 @@ fn main() {
         println!("async bye 2");
 
         println!("{}", task.await);
-    });
+    })
+    .unwrap();
     println!("bye");
 }
