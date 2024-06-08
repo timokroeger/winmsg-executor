@@ -24,7 +24,11 @@ pub fn dispatch(msg: &MSG) -> bool {
     }
 }
 
-pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
+pub fn spawn<F>(future: F) -> JoinHandle<F>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
     // Its important to get the current thread id *outside* of the `schedule`
     // closure which can run from a different.
     let thread_id = unsafe { GetCurrentThreadId() };
@@ -48,10 +52,12 @@ pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
     }
 }
 
-fn spawn_local<F: Future + 'static>(
-    future: F,
-    schedule: impl Schedule + Send + Sync + 'static,
-) -> (Runnable, async_task::Task<F::Output>) {
+fn spawn_local<F, S>(future: F, schedule: S) -> (Runnable, async_task::Task<F::Output>)
+where
+    F: Future + 'static,
+    F::Output: 'static,
+    S: Schedule + Send + Sync + 'static,
+{
     // SAFETY: The `future` does not need to be `Send` because the thread that
     // receives the runnable is our own. All other safety properties are ensured
     // by the function signature.

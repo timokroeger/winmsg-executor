@@ -29,7 +29,11 @@ use windows_sys::Win32::{
 ///
 /// Panics when the message loops is running already. This happens when
 /// `block_on` or `run` is called from async tasks running on this executor.
-pub fn block_on<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
+pub fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
     // Wrap the future so it quits the message loop when finished.
     let task = backend::spawn(async move {
         let result = future.await;
@@ -116,6 +120,10 @@ pub type JoinHandle<F> = backend::JoinHandle<F>;
 /// This function may be used to spawn tasks when the message loop is not
 /// running. The provided future will start running once the message loop
 /// is entered with [`MessageLoop::block_on()`] or [`MessageLoop::run()`].
-pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
+pub fn spawn<F>(future: F) -> JoinHandle<F>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
     backend::spawn(future)
 }

@@ -83,7 +83,11 @@ impl<F: Future> Future for JoinHandle<F> {
     }
 }
 
-pub fn spawn<F: Future + 'static>(future: F) -> JoinHandle<F> {
+pub fn spawn<F>(future: F) -> JoinHandle<F>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
     // Create a message only window to run the tasks.
     let window = Window::new_reentrant(true, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
