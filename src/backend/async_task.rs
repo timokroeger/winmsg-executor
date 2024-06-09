@@ -9,7 +9,7 @@ use std::{
 use async_task::{Runnable, Schedule};
 use windows_sys::Win32::{System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*};
 
-const MSG_ID_WAKE: u32 = WM_APP;
+const MSG_ID_WAKE: u32 = WM_APP + 13370;
 
 pub fn dispatch(msg: &MSG) -> bool {
     // Ignore any window messages (hwnd != 0) and look at wake messages messages

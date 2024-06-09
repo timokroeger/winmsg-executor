@@ -25,6 +25,25 @@ use crate::util::MsgFilterHook;
 /// Panics when the message loops is running already. This happens when
 /// `block_on` or `run` is called from async tasks running on this executor.
 pub fn run_message_loop() {
+    run_message_loop_with_dispatcher(|_| false);
+}
+
+/// Runs the message loop, calling `dispatcher` for each received message.
+///
+/// If `dispatcher` has handled the message it shall return true. When returning
+/// `false` the message it forwarded to the default dispatcher.
+///
+/// When using `backend-async-task` the message 0xB43A (WM_APP + 13370) is
+/// reserved. Messages with that number will be handled and filtered by the
+/// executor backend.
+///
+/// Executes previously [`spawn`]ed tasks.
+///
+/// # Panics
+///
+/// Panics when the message loops is running already. This happens when
+/// `block_on` or `run` is called from async tasks running on this executor.
+pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
     thread_local!(static MESSAGE_LOOP_RUNNING: Cell<bool> = const { Cell::new(false) });
     assert!(
         !MESSAGE_LOOP_RUNNING.replace(true),
@@ -34,7 +53,10 @@ pub fn run_message_loop() {
     // Any modal window (i.e. a right-click menu) blocks the main message loop
     // and dispatches messages internally. To keep the executor running use a
     // hook to get access to modal windows internal message loop.
-    let _hook = MsgFilterHook::register(backend::dispatch);
+    // SAFETY: Drop runs at end of scope and unregisters hook, dispatchers
+    // will not be called after that anymore.
+    let _hook =
+        unsafe { MsgFilterHook::register(move |msg| backend::dispatch(msg) || dispatcher(msg)) };
 
     loop {
         let mut msg = MaybeUninit::uninit();
@@ -43,7 +65,8 @@ pub fn run_message_loop() {
             let msg = msg.assume_init();
             match ret {
                 1 => {
-                    if !backend::dispatch(&msg) {
+                    // Handle the message in the msg filter hook.
+                    if CallMsgFilterA(&msg, 0) == 0 {
                         TranslateMessage(&msg);
                         DispatchMessageA(&msg);
                     }
