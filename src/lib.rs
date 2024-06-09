@@ -12,9 +12,9 @@ use std::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-use windows_sys::Win32::{
-    Foundation::*, System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+use crate::util::MsgFilterHook;
 
 /// Runs the message loop.
 ///
@@ -34,14 +34,7 @@ pub fn run_message_loop() {
     // Any modal window (i.e. a right-click menu) blocks the main message loop
     // and dispatches messages internally. To keep the executor running use a
     // hook to get access to modal windows internal message loop.
-    unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if code >= 0 && backend::dispatch(&*(lparam as *const MSG)) {
-            1
-        } else {
-            CallNextHookEx(0, code, wparam, lparam)
-        }
-    }
-    let hook = unsafe { SetWindowsHookExA(WH_MSGFILTER, Some(hook_proc), 0, GetCurrentThreadId()) };
+    let _hook = MsgFilterHook::register(backend::dispatch);
 
     loop {
         let mut msg = MaybeUninit::uninit();
@@ -61,7 +54,6 @@ pub fn run_message_loop() {
         }
     }
 
-    unsafe { UnhookWindowsHookEx(hook) };
     MESSAGE_LOOP_RUNNING.set(false);
 }
 
