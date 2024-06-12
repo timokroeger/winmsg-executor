@@ -19,8 +19,7 @@ Scheduling a tasks means posting its runnable to the threads message queue (simi
 
 ## Comparison with similar crates
 
-Both of those listed crates run one taks/future per thread in their and expose
-only `block_on()`.
+Both of those listed crates run one taks/future per thread in their and expose only `block_on()`.
 [Is block_on an executor?](https://github.com/rust-lang/async-book/issues/219)
 
 ### [`windows-exeuctor`](https://github.com/haileys/windows-executor/)
