@@ -1,5 +1,9 @@
 # `winmsg-executor`
 
+[![Crates.io](https://img.shields.io/crates/v/winmsg-executor)](https://crates.io/crates/winmsg-executor)
+![Crates.io License](https://img.shields.io/crates/l/winmsg-executor)
+[![docs.rs](https://img.shields.io/docsrs/winmsg-executor)](https://docs.rs/winmsg-executor)
+
 Per-thread async rust executor for windows.
 Each task is backed by a [message-only window][1].
 The executor thread runs the native [windows message loop][2] which dispatches wake messages to the tasks window procedure which polls the task future.
