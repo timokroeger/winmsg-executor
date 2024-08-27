@@ -2,7 +2,7 @@
 name = "winmsg-executor"
 description = "Per-thread async rust executor for windows"
 repository = "https://github.com/timokroeger/winmsg-executor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT/Apache-2.0"
 
