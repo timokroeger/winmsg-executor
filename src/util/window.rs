@@ -133,8 +133,12 @@ impl<S> Window<S> {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                if message_only { HWND_MESSAGE } else { 0 },
-                0,
+                if message_only {
+                    HWND_MESSAGE
+                } else {
+                    ptr::null_mut()
+                },
+                ptr::null_mut(),
                 get_instance_handle(),
                 // The subclass info can be passed as pointer to the stack
                 // allocated variable because it will only be accessed during
@@ -142,15 +146,14 @@ impl<S> Window<S> {
                 ptr::from_ref(&subclassinfo).cast(),
             )
         };
-
-        if hwnd != 0 {
-            Ok(Self {
-                hwnd,
-                shared_state_ptr,
-            })
-        } else {
-            Err(WindowCreationError)
+        if hwnd.is_null() {
+            return Err(WindowCreationError);
         }
+
+        Ok(Self {
+            hwnd,
+            shared_state_ptr,
+        })
     }
 
     /// Returns this windows raw window handle.
@@ -175,7 +178,7 @@ unsafe extern "system" fn wndproc_setup(
         let subclassinfo = &*((*create_params).lpCreateParams as *const SubClassInformation);
 
         // Replace our `wndproc` with the one using the correct type.
-        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, subclassinfo.wndproc as isize);
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, subclassinfo.wndproc as usize as isize);
 
         // Attach user data to the window so it can be accessed from the
         // `wndproc` callback function when receiving other messages.

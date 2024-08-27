@@ -14,7 +14,7 @@ const MSG_ID_WAKE: u32 = WM_APP + 13370;
 pub fn dispatch(msg: &MSG) -> bool {
     // Ignore any window messages (hwnd != 0) and look at wake messages messages
     // sent to the message loop directly (hwnd == 0).
-    if msg.hwnd == 0 && msg.message == MSG_ID_WAKE {
+    if msg.hwnd.is_null() && msg.message == MSG_ID_WAKE {
         let runnable =
             unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(msg.lParam as *mut _)) };
         runnable.run();

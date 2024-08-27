@@ -61,7 +61,7 @@ pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
     loop {
         let mut msg = MaybeUninit::uninit();
         unsafe {
-            let ret = GetMessageA(msg.as_mut_ptr(), 0, 0, 0);
+            let ret = GetMessageA(msg.as_mut_ptr(), ptr::null_mut(), 0, 0);
             let msg = msg.assume_init();
             match ret {
                 1 => {

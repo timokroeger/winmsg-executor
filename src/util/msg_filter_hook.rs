@@ -30,7 +30,7 @@ impl<'a, F: Fn(&MSG) -> bool + 'a> MsgFilterHook<'a, F> {
             lparam: LPARAM,
         ) -> LRESULT {
             if code < 0 {
-                return CallNextHookEx(0, code, wparam, lparam);
+                return CallNextHookEx(ptr::null_mut(), code, wparam, lparam);
             }
 
             let f = &*(MSG_FILTER_HOOK.get() as *const F);
@@ -39,12 +39,17 @@ impl<'a, F: Fn(&MSG) -> bool + 'a> MsgFilterHook<'a, F> {
             if f(msg) {
                 1
             } else {
-                CallNextHookEx(0, code, wparam, lparam)
+                CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
             }
         }
 
         let hhook = unsafe {
-            SetWindowsHookExA(WH_MSGFILTER, Some(hook_proc::<F>), 0, GetCurrentThreadId())
+            SetWindowsHookExA(
+                WH_MSGFILTER,
+                Some(hook_proc::<F>),
+                ptr::null_mut(),
+                GetCurrentThreadId(),
+            )
         };
         Self {
             hhook,
