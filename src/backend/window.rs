@@ -1,6 +1,7 @@
 use std::{
     cell::UnsafeCell,
     future::Future,
+    marker::PhantomData,
     mem,
     pin::Pin,
     sync::Arc,
@@ -59,6 +60,7 @@ impl<F: Future> Wake for Task<F> {
 
 pub struct JoinHandle<F: Future> {
     task: Arc<Task<F>>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<F: Future> Future for JoinHandle<F> {
@@ -122,5 +124,8 @@ where
     // Trigger initial poll.
     Waker::from(task.clone()).wake();
 
-    JoinHandle { task }
+    JoinHandle {
+        task,
+        _not_send: PhantomData,
+    }
 }
