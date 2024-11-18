@@ -25,7 +25,7 @@ struct SubClassInformation {
     user_data: *const (),
 }
 
-/// Wrapper for the argements to the [`WNDPROC callback function`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc).
+/// Wrapper for the arguments to the [`WNDPROC callback function`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc).
 #[derive(Debug, Clone)]
 pub struct WindowMessage {
     pub hwnd: HWND,
@@ -50,7 +50,7 @@ impl<S> Drop for Window<S> {
 /// Window could not be created.
 ///
 /// Possible failure reasons:
-/// * `WM_NCCREATE` massege was handled but did not return 0
+/// * `WM_NCCREATE` message was handled but did not return 0
 /// * `WM_CREATE` message was handled but returned -1
 #[derive(Debug)]
 pub struct WindowCreationError;
@@ -58,11 +58,10 @@ pub struct WindowCreationError;
 impl<S> Window<S> {
     /// Creates a new window with a `wndproc` closure.
     ///
-    /// The `shared_state` parameter will be allocated alongside closure with
-    /// a `'static` lifetime. Allows for convenient access to variables from
-    /// both inside and outside of the closure without an extra `Rc<State>`.
-    /// Use the [`Window::shared_state()`] method to access the state from the
-    /// outside.
+    /// The `shared_state` parameter will be allocated alongside the closure.
+    /// Allows for convenient access to variables from both inside and outside
+    /// of the closure without an extra `Rc<State>`. Use the
+    /// [`Window::shared_state()`] method to access the state from the outside.
     ///
     /// [Message-Only Windows] are useful for windows that do not need to be
     /// visible nor need access to broadcast messages from the desktop.
@@ -70,9 +69,9 @@ impl<S> Window<S> {
     /// [Message-Only Windows]: https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
     ///
     /// Internally uses a `RefCell` for the closure to prevent it from being
-    /// re-entered by nested message loops (e.g. from modal dialogs). Forwards
-    /// nested messages to the default wndproc procudere. If you required more
-    /// control for those scenarios use [`Window::new_reentrant()`].
+    /// re-entered by nested message loops (e.g., from modal dialogs). Forwards
+    /// nested messages to the default wndproc procedure. If you require more
+    /// control for those scenarios, use [`Window::new_reentrant()`].
     pub fn new<F>(
         message_only: bool,
         shared_state: S,
@@ -84,8 +83,8 @@ impl<S> Window<S> {
         let wndproc = RefCell::new(wndproc);
         Self::new_reentrant(message_only, shared_state, move |state, msg| {
             // Detect when `wndproc` is re-entered, which can happen when the user
-            // provided handler creates a modal dialog (e.g. a popup-menu). Rust rules
-            // do not allow us to create a second mutable reference to the user provided
+            // provided handler creates a modal dialog (e.g., a popup-menu). Rust rules
+            // do not allow us to create a second mutable reference to the user-provided
             // handler. Run the default windows procedure instead.
             let mut wndproc = wndproc.try_borrow_mut().ok()?;
             wndproc(state, msg)
@@ -104,7 +103,7 @@ impl<S> Window<S> {
         let class_name = c"winmsg-executor".as_ptr().cast();
 
         // A class must only be unregistered when it was registered from a DLL which
-        // is unloaded during program execution: For now an unsupported use case.
+        // is unloaded during program execution: For now, an unsupported use case.
         static CLASS_REGISTRATION: Once = Once::new();
         CLASS_REGISTRATION.call_once(|| {
             let mut wnd_class: WNDCLASSA = unsafe { std::mem::zeroed() };
@@ -140,9 +139,9 @@ impl<S> Window<S> {
                 },
                 ptr::null_mut(),
                 get_instance_handle(),
-                // The subclass info can be passed as pointer to the stack
+                // The subclass info can be passed as a pointer to the stack
                 // allocated variable because it will only be accessed during
-                // the `CreateWindowExA()` call and not afterwards.
+                // the `CreateWindowExA()` call and not afterward.
                 ptr::from_ref(&subclassinfo).cast(),
             )
         };
@@ -220,13 +219,13 @@ where
     if msg == WM_CLOSE {
         // We manage the window lifetime ourselves. Prevent the default
         // handler from calling `DestroyWindow()` to keep the state
-        // alloacted until the window wrapper struct is dropped.
+        // allocated until the window wrapper struct is dropped.
         return 0;
     }
 
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
-        // the windows is destroyed. Deallocate the window user data.
+        // the window is destroyed. Deallocate the window user data.
         drop(Box::from_raw(user_data));
         return 0;
     }

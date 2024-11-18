@@ -12,14 +12,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::util::Window;
 
 pub const fn dispatch(_msg: &MSG) -> bool {
-    // Forward all message and let the operating system handle dispatching of
+    // Forward all messages and let the operating system handle dispatching of
     // messages to the matching wndproc.
     false
 }
 
 const MSG_ID_WAKE: u32 = WM_USER;
 
-// Same terminology as `async-task` crate.
+// Same terminology as the `async-task` crate.
 enum TaskState<F: Future> {
     Running(F, Option<Waker>),
     Completed(F::Output),

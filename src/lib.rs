@@ -22,7 +22,7 @@ use crate::util::MsgFilterHook;
 ///
 /// # Panics
 ///
-/// Panics when the message loops is running already. This happens when
+/// Panics when the message loop is running already. This happens when
 /// `block_on` or `run` is called from async tasks running on this executor.
 pub fn run_message_loop() {
     run_message_loop_with_dispatcher(|_| false);
@@ -31,7 +31,7 @@ pub fn run_message_loop() {
 /// Runs the message loop, calling `dispatcher` for each received message.
 ///
 /// If `dispatcher` has handled the message it shall return true. When returning
-/// `false` the message it forwarded to the default dispatcher.
+/// `false` the message is forwarded to the default dispatcher.
 ///
 /// When using `backend-async-task` the message 0xB43A (WM_APP + 13370) is
 /// reserved. Messages with that number will be handled and filtered by the
@@ -53,8 +53,8 @@ pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
     // Any modal window (i.e. a right-click menu) blocks the main message loop
     // and dispatches messages internally. To keep the executor running use a
     // hook to get access to modal windows internal message loop.
-    // SAFETY: Drop runs at end of scope and unregisters hook, dispatchers
-    // will not be called after that anymore.
+    // SAFETY: The Drop implementation of MsgFilterHook unregisters the hook,
+    // ensuring that dispatchers will not be called after the end of the scope.
     let _hook =
         unsafe { MsgFilterHook::register(move |msg| backend::dispatch(msg) || dispatcher(msg)) };
 
@@ -136,15 +136,16 @@ fn poll_ready<T>(future: impl Future<Output = T>) -> Result<T, ()> {
 
 /// An owned permission to join on a task (await its termination).
 ///
-/// If a `JoinHandle` is dropped, then its task continues running in the background
-/// and its return value is lost.
+/// If a `JoinHandle` is dropped, then its task continues running in the
+/// background and its return value is lost.
 pub type JoinHandle<F> = backend::JoinHandle<F>;
 
 /// Spawns a new future on the current thread.
 ///
 /// This function may be used to spawn tasks when the message loop is not
 /// running. The provided future will start running once the message loop
-/// is entered with [`MessageLoop::block_on()`] or [`MessageLoop::run()`].
+/// is entered with [`run_message_loop`], [`run_message_loop_with_dispatcher`]
+/// or [`block_on`].
 pub fn spawn<F>(future: F) -> JoinHandle<F>
 where
     F: Future + 'static,

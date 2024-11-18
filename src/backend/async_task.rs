@@ -12,8 +12,7 @@ use windows_sys::Win32::{System::Threading::GetCurrentThreadId, UI::WindowsAndMe
 const MSG_ID_WAKE: u32 = WM_APP + 13370;
 
 pub fn dispatch(msg: &MSG) -> bool {
-    // Ignore any window messages (hwnd != 0) and look at wake messages messages
-    // sent to the message loop directly (hwnd == 0).
+    // Only accept the wake message if it was posted to the message loop directly (hwnd == 0).
     if msg.hwnd.is_null() && msg.message == MSG_ID_WAKE {
         let runnable =
             unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(msg.lParam as *mut _)) };
@@ -29,15 +28,14 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    // Its important to get the current thread id *outside* of the `schedule`
-    // closure which can run from a different.
+    // It's important to get the current thread id *outside* of the `schedule`
+    // closure which may run from different thread.
     let thread_id = unsafe { GetCurrentThreadId() };
 
-    // To schedule the task we post the runnable to our own threads message
-    // queue. `async-task` tracks if the task has completed and prevents the
-    // schedule closure from being called. That means its safe to keep waker
-    // references in different threads even after a task has completed and its
-    // executing thread was terminated.
+    // To schedule the task, we post the runnable to our own thread's message
+    // queue. It is safe safe to keep waker references in different threads even
+    // after the message loop thread has terminated, because `async-task` does
+    // not call the schedule closure for completed/canceled tasks.
     let schedule = move |runnable: Runnable| unsafe {
         PostThreadMessageA(thread_id, MSG_ID_WAKE, 0, runnable.into_raw().as_ptr() as _);
     };
