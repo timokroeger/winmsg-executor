@@ -177,12 +177,12 @@ unsafe extern "system" fn wndproc_setup(
         let subclassinfo = &*((*create_params).lpCreateParams as *const SubClassInformation);
 
         // Replace our `wndproc` with the one using the correct type.
-        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, subclassinfo.wndproc as usize as isize);
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, subclassinfo.wndproc as usize as _);
 
         // Attach user data to the window so it can be accessed from the
         // `wndproc` callback function when receiving other messages.
         // https://devblogs.microsoft.com/oldnewthing/20191014-00/?p=102992
-        SetWindowLongPtrA(hwnd, GWLP_USERDATA, subclassinfo.user_data as isize);
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, subclassinfo.user_data as _);
 
         // Forward this message to the freshly registered subclass wndproc.
         SendMessageA(hwnd, msg, wparam, lparam)
