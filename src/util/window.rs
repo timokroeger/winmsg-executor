@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ptr, sync::Once};
+use std::{cell::RefCell, pin::Pin, ptr, sync::Once};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
@@ -78,7 +78,7 @@ impl<S> Window<S> {
         wndproc: F,
     ) -> Result<Self, WindowCreationError>
     where
-        F: FnMut(&S, WindowMessage) -> Option<LRESULT> + 'static,
+        F: FnMut(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
     {
         let wndproc = RefCell::new(wndproc);
         Self::new_reentrant(message_only, shared_state, move |state, msg| {
@@ -98,7 +98,7 @@ impl<S> Window<S> {
         wndproc: F,
     ) -> Result<Self, WindowCreationError>
     where
-        F: Fn(&S, WindowMessage) -> Option<LRESULT> + 'static,
+        F: Fn(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
     {
         let class_name = c"winmsg-executor".as_ptr().cast();
 
@@ -161,8 +161,8 @@ impl<S> Window<S> {
     }
 
     /// Returns a reference to the state shared with the `wndproc` closure.
-    pub fn shared_state(&self) -> &S {
-        unsafe { &*self.shared_state_ptr }
+    pub fn shared_state(&self) -> Pin<&S> {
+        unsafe { Pin::new_unchecked(&*self.shared_state_ptr) }
     }
 }
 
@@ -201,13 +201,13 @@ unsafe extern "system" fn wndproc_typed<S, F>(
     lparam: LPARAM,
 ) -> LRESULT
 where
-    F: Fn(&S, WindowMessage) -> Option<LRESULT> + 'static,
+    F: Fn(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
 {
     let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, F));
 
     let wndproc = &user_data.1;
     let ret = wndproc(
-        &user_data.0,
+        Pin::new_unchecked(&user_data.0),
         WindowMessage {
             hwnd,
             msg,
