@@ -15,12 +15,6 @@ The executor thread runs the native [Windows message loop][2], which dispatches 
 - Modal windows like menus do not block other tasks running on the same thread.
 - Helper code to implement window procedures with closures that can have state.
 
-## Alternative Backend: `async-task`
-
-Selected by the `backend-async-task` cargo feature.
-Uses `async-task`'s task abstraction instead of a window per task to store the future.
-Scheduling a task means posting its runnable to the thread's message queue (similar to `windows-executor` see below).
-
 ## Comparison with similar crates
 
 Both of the listed crates run one task/future per thread and expose only `block_on()`.
