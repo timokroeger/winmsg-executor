@@ -3,16 +3,15 @@
 pub mod util;
 
 use std::{
-    cell::{Cell, UnsafeCell},
+    cell::Cell,
     future::Future,
-    marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     pin::{pin, Pin},
-    ptr,
-    sync::Arc,
-    task::{Context, Poll, RawWaker, RawWakerVTable, Wake, Waker},
+    ptr::{self, NonNull},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
+use async_task::Runnable;
 use util::Window;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -20,72 +19,63 @@ use crate::util::MsgFilterHook;
 
 const MSG_ID_WAKE: u32 = WM_USER;
 
-// Same terminology as the `async-task` crate.
-enum TaskState<F: Future> {
-    Running(F, Option<Waker>),
-    Completed(F::Output),
-    Closed,
-}
-
-struct Task<F: Future> {
-    window: Window<()>,
-    state: UnsafeCell<TaskState<F>>,
-}
-
-// SAFETY: The wake implementation (which requires `Send` and `Sync`) only uses
-// the window handle and passes it to a safe function call. All other state is
-// only accessed from one thread.
-unsafe impl<F: Future> Send for Task<F> {}
-unsafe impl<F: Future> Sync for Task<F> {}
-
-impl<F: Future> Wake for Task<F> {
-    fn wake(self: Arc<Self>) {
-        // Ideally the waker would know if the task has completed to decide if
-        // its necessary to send a wake message. But that also means access that
-        // task state must be made thread safe. Instead, always post the wake
-        // message and let the receiver side (which runs on the same thread the
-        // task was created on) decide if a task needs to be polled.
-        // `Arc<Self>` keeps the target window alive for as long as wakers for
-        // the task exist.
-        unsafe {
-            PostMessageA(
-                self.window.hwnd(),
-                MSG_ID_WAKE,
-                0,
-                Arc::into_raw(self) as isize,
-            )
-        };
-    }
-}
-
 /// An owned permission to join on a task (await its termination).
 ///
 /// If a `JoinHandle` is dropped, then its task continues running in the
 /// background and its return value is lost.
-pub struct JoinHandle<F: Future> {
-    task: Arc<Task<F>>,
-    _not_send: PhantomData<*const ()>,
+pub struct JoinHandle<T> {
+    task: ManuallyDrop<async_task::Task<T>>,
 }
 
-impl<F: Future> Future for JoinHandle<F> {
-    type Output = F::Output;
+// Keep the task running when dropped.
+impl<T> Drop for JoinHandle<T> {
+    fn drop(&mut self) {
+        let task = unsafe { ManuallyDrop::take(&mut self.task) };
+        task.detach();
+    }
+}
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let task_state = unsafe { &mut *self.task.state.get() };
+impl<T> Future for JoinHandle<T> {
+    type Output = T;
 
-        if let TaskState::Running(_, waker) = task_state {
-            match waker {
-                Some(waker) if waker.will_wake(cx.waker()) => {}
-                waker => *waker = Some(cx.waker().clone()),
-            }
-            return Poll::Pending;
-        }
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        pin!(&mut *self.task).poll(cx)
+    }
+}
 
-        if let TaskState::Completed(result) = mem::replace(task_state, TaskState::Closed) {
-            Poll::Ready(result)
+fn spawn_unchecked<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> JoinHandle<T> {
+    // Create a message only window to run the tasks.
+    let window = Window::new_reentrant(true, (), |_, msg| {
+        if msg.msg == MSG_ID_WAKE {
+            let runnable =
+                unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(msg.lparam as *mut _)) };
+            runnable.run();
+            Some(0)
         } else {
-            panic!("future polled after ready");
+            None
         }
+    })
+    .unwrap();
+
+    // SAFETY:
+    // * The `future` does not need to be `Send` because the thread that receives the runnable is
+    //   our own, meaning the runniable is also dropped on original thread.
+    let (runnable, task) = unsafe {
+        async_task::spawn_unchecked(future, move |runnable: Runnable| {
+            PostMessageA(
+                window.hwnd(),
+                MSG_ID_WAKE,
+                0,
+                runnable.into_raw().as_ptr() as _,
+            );
+        })
+    };
+
+    // Trigger initial poll.
+    runnable.schedule();
+
+    JoinHandle {
+        task: ManuallyDrop::new(task),
     }
 }
 
@@ -95,49 +85,8 @@ impl<F: Future> Future for JoinHandle<F> {
 /// running. The provided future will start running once the message loop
 /// is entered with [`run_message_loop`], [`run_message_loop_with_dispatcher`]
 /// or [`block_on`].
-pub fn spawn<F>(future: F) -> JoinHandle<F>
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
-    // Create a message only window to run the tasks.
-    let window = Window::new_reentrant(true, (), |_, msg| {
-        if msg.msg == MSG_ID_WAKE {
-            // Poll the tasks future
-            let task = unsafe { Arc::from_raw(msg.lparam as *const Task<F>) };
-            let task_state = unsafe { &mut *task.state.get() };
-
-            if let TaskState::Running(ref mut future, ref mut waker) = task_state {
-                let future_pinned = unsafe { Pin::new_unchecked(future) };
-                if let Poll::Ready(result) =
-                    future_pinned.poll(&mut Context::from_waker(&Waker::from(task.clone())))
-                {
-                    if let Some(w) = waker.take() {
-                        w.wake();
-                    }
-                    *task_state = TaskState::Completed(result);
-                }
-            }
-
-            Some(0)
-        } else {
-            None
-        }
-    })
-    .unwrap();
-
-    let task = Arc::new(Task {
-        window,
-        state: UnsafeCell::new(TaskState::Running(future, None)),
-    });
-
-    // Trigger initial poll.
-    Waker::from(task.clone()).wake();
-
-    JoinHandle {
-        task,
-        _not_send: PhantomData,
-    }
+pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
+    spawn_unchecked(future)
 }
 
 /// Runs the message loop.
@@ -221,13 +170,9 @@ pub struct QuitMessageLoop;
 ///
 /// Panics when the message loops is running already. This happens when
 /// `block_on` or `run` is called from async tasks running on this executor.
-pub fn block_on<F>(future: F) -> Result<F::Output, QuitMessageLoop>
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
+pub fn block_on<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> Result<T, QuitMessageLoop> {
     // Wrap the future so it quits the message loop when finished.
-    let task = spawn(async move {
+    let task = spawn_unchecked(async move {
         let result = future.await;
         quit_message_loop();
         result

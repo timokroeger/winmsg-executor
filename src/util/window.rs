@@ -41,6 +41,9 @@ pub struct Window<S> {
     shared_state_ptr: *const S,
 }
 
+unsafe impl<S: Send> Send for Window<S> {}
+unsafe impl<S: Sync> Sync for Window<S> {}
+
 impl<S> Drop for Window<S> {
     fn drop(&mut self) {
         unsafe { DestroyWindow(self.hwnd) };
