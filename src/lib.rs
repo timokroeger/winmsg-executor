@@ -1,20 +1,94 @@
 #![doc = include_str!("../README.md")]
 
-mod backend;
 pub mod util;
 
 use std::{
     cell::Cell,
     future::Future,
-    mem::MaybeUninit,
-    pin::pin,
-    ptr,
+    mem::{ManuallyDrop, MaybeUninit},
+    pin::{pin, Pin},
+    ptr::{self, NonNull},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
+use async_task::Runnable;
+use util::Window;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::util::MsgFilterHook;
+
+const MSG_ID_WAKE: u32 = WM_USER;
+
+thread_local! {
+    static EXECUTOR_WINDOW: Window<()> = Window::new_reentrant(true, (), |_, msg| {
+        if msg.msg == MSG_ID_WAKE {
+            let runnable = unsafe {
+                let runnable_ptr = NonNull::new_unchecked(msg.lparam as *mut _);
+                Runnable::<()>::from_raw(runnable_ptr)
+            };
+            runnable.run();
+            Some(0)
+        } else {
+            None
+        }
+    })
+    .unwrap();
+}
+
+/// An owned permission to join on a task (await its termination).
+///
+/// If a `JoinHandle` is dropped, then its task continues running in the
+/// background and its return value is lost.
+pub struct JoinHandle<T> {
+    task: ManuallyDrop<async_task::Task<T>>,
+}
+
+// Keep the task running when dropped.
+impl<T> Drop for JoinHandle<T> {
+    fn drop(&mut self) {
+        let task = unsafe { ManuallyDrop::take(&mut self.task) };
+        task.detach();
+    }
+}
+
+impl<T> Future for JoinHandle<T> {
+    type Output = T;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        pin!(&mut *self.task).poll(cx)
+    }
+}
+
+unsafe fn spawn_unchecked_lifetime<T>(future: impl Future<Output = T>) -> JoinHandle<T> {
+    let hwnd = EXECUTOR_WINDOW.with(|w| w.hwnd());
+
+    // SAFETY: The `future` does not need to be `Send` because the thread that
+    // receives the runnable is our own, meaning the runniable is also dropped
+    // on original thread.
+    let (runnable, task) = unsafe {
+        async_task::spawn_unchecked(future, move |runnable: Runnable| {
+            PostMessageA(hwnd, MSG_ID_WAKE, 0, runnable.into_raw().as_ptr() as _);
+        })
+    };
+
+    // Trigger initial poll.
+    runnable.schedule();
+
+    JoinHandle {
+        task: ManuallyDrop::new(task),
+    }
+}
+
+/// Spawns a new future on the current thread.
+///
+/// This function may be used to spawn tasks when the message loop is not
+/// running. The provided future will start running once the message loop
+/// is entered with [`run_message_loop`], [`run_message_loop_with_dispatcher`]
+/// or [`block_on`].
+pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
+    // SAFETY: future is `'static`
+    unsafe { spawn_unchecked_lifetime(future) }
+}
 
 /// Runs the message loop.
 ///
@@ -32,10 +106,6 @@ pub fn run_message_loop() {
 ///
 /// If `dispatcher` has handled the message it shall return true. When returning
 /// `false` the message is forwarded to the default dispatcher.
-///
-/// When using `backend-async-task` the message 0xB43A (WM_APP + 13370) is
-/// reserved. Messages with that number will be handled and filtered by the
-/// executor backend.
 ///
 /// Executes previously [`spawn`]ed tasks.
 ///
@@ -55,8 +125,7 @@ pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
     // hook to get access to modal windows internal message loop.
     // SAFETY: The Drop implementation of MsgFilterHook unregisters the hook,
     // ensuring that dispatchers will not be called after the end of the scope.
-    let _hook =
-        unsafe { MsgFilterHook::register(move |msg| backend::dispatch(msg) || dispatcher(msg)) };
+    let _hook = unsafe { MsgFilterHook::register(dispatcher) };
 
     loop {
         let mut msg = MaybeUninit::uninit();
@@ -102,17 +171,17 @@ pub struct QuitMessageLoop;
 ///
 /// Panics when the message loops is running already. This happens when
 /// `block_on` or `run` is called from async tasks running on this executor.
-pub fn block_on<F>(future: F) -> Result<F::Output, QuitMessageLoop>
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
+pub fn block_on<T>(future: impl Future<Output = T>) -> Result<T, QuitMessageLoop> {
     // Wrap the future so it quits the message loop when finished.
-    let task = backend::spawn(async move {
-        let result = future.await;
-        quit_message_loop();
-        result
-    });
+    // SAFETY: All borrowed variables outlive the task itself because we only
+    // return from this function after the task has finished.
+    let task = unsafe {
+        spawn_unchecked_lifetime(async move {
+            let result = future.await;
+            quit_message_loop();
+            result
+        })
+    };
     run_message_loop();
     poll_ready(task).map_err(|_| QuitMessageLoop)
 }
@@ -132,24 +201,4 @@ fn poll_ready<T>(future: impl Future<Output = T>) -> Result<T, ()> {
     } else {
         Err(())
     }
-}
-
-/// An owned permission to join on a task (await its termination).
-///
-/// If a `JoinHandle` is dropped, then its task continues running in the
-/// background and its return value is lost.
-pub type JoinHandle<F> = backend::JoinHandle<F>;
-
-/// Spawns a new future on the current thread.
-///
-/// This function may be used to spawn tasks when the message loop is not
-/// running. The provided future will start running once the message loop
-/// is entered with [`run_message_loop`], [`run_message_loop_with_dispatcher`]
-/// or [`block_on`].
-pub fn spawn<F>(future: F) -> JoinHandle<F>
-where
-    F: Future + 'static,
-    F::Output: 'static,
-{
-    backend::spawn(future)
 }
