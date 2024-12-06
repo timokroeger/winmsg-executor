@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_task::Runnable;
-use util::Window;
+use util::{MsgFilterHook, Window, WindowType};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::util::MsgFilterHook;
@@ -45,7 +45,7 @@ impl<T> Future for JoinHandle<T> {
 
 fn spawn_unchecked<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> JoinHandle<T> {
     // Create a message only window to run the tasks.
-    let window = Window::new_reentrant(true, (), |_, msg| {
+    let window = Window::new_reentrant(WindowType::MessageOnly, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             let runnable =
                 unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(msg.lparam as *mut _)) };

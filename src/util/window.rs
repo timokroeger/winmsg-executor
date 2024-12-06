@@ -43,7 +43,7 @@ pub struct WindowMessage {
 #[repr(C)]
 struct UserData<S, F> {
     ref_count: Cell<usize>,
-    shared_state: S,
+    state: S,
     wndproc: F,
 }
 
@@ -80,6 +80,19 @@ impl<S> Drop for Window<S> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowType {
+    /// Visible window which receives broadcast messages from the desktop.
+    TopLevel,
+
+    /// [Message-Only Windows] are useful for windows that do not need to be
+    /// visible nor need access to broadcast messages from the desktop.
+    ///
+    /// [Message-Only Windows]:
+    /// https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+    MessageOnly,
+}
+
 /// Window could not be created.
 ///
 /// Possible failure reasons:
@@ -93,31 +106,26 @@ pub struct WindowCreationError;
 impl<S> Window<S> {
     /// Creates a new window with a `wndproc` closure.
     ///
-    /// The `shared_state` parameter will be allocated alongside the closure.
-    /// Allows for convenient access to variables from both inside and outside
-    /// of the closure without an extra `Rc<State>`. Use the
-    /// [`Window::shared_state()`] method to access the state from the outside.
-    ///
-    /// [Message-Only Windows] are useful for windows that do not need to be
-    /// visible nor need access to broadcast messages from the desktop.
-    ///
-    /// [Message-Only Windows]:
-    /// https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+    /// The `state` parameter will be allocated alongside the closure. It is
+    /// meant as a convenient alternative to `Rc<State>` to access to variables
+    /// from both inside and outside of the closure. A pinned reference to the
+    /// state is passed as first parameter the closure. Use [`Window::state()`]
+    /// to access the state from the outside.
     ///
     /// Internally uses a `RefCell` for the closure to prevent it from being
     /// re-entered by nested message loops (e.g., from modal dialogs). Forwards
     /// nested messages to the default wndproc procedure. If you require more
     /// control for those scenarios, use [`Window::new_reentrant()`].
     pub fn new<F>(
-        message_only: bool,
-        shared_state: S,
+        window_type: WindowType,
+        state: S,
         wndproc: F,
     ) -> Result<Self, WindowCreationError>
     where
         F: FnMut(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
     {
         let wndproc = RefCell::new(wndproc);
-        Self::new_reentrant(message_only, shared_state, move |state, msg| {
+        Self::new_reentrant(window_type, state, move |state, msg| {
             // Detect when `wndproc` is re-entered, which can happen when the user
             // provided handler creates a modal dialog (e.g., a popup-menu). Rust rules
             // do not allow us to create a second mutable reference to the user-provided
@@ -129,8 +137,8 @@ impl<S> Window<S> {
 
     /// Same as [`Window::new()`] but allows the closure to be re-entered.
     pub fn new_reentrant<F>(
-        message_only: bool,
-        shared_state: S,
+        window_type: WindowType,
+        state: S,
         wndproc: F,
     ) -> Result<Self, WindowCreationError>
     where
@@ -154,7 +162,7 @@ impl<S> Window<S> {
             wndproc: wndproc_typed::<S, F>,
             user_data: Box::into_raw(Box::new(UserData {
                 ref_count: Cell::new(1),
-                shared_state,
+                state,
                 wndproc,
             }))
             .cast(),
@@ -170,10 +178,9 @@ impl<S> Window<S> {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                if message_only {
-                    HWND_MESSAGE
-                } else {
-                    ptr::null_mut()
+                match window_type {
+                    WindowType::TopLevel => ptr::null_mut(),
+                    WindowType::MessageOnly => HWND_MESSAGE,
                 },
                 ptr::null_mut(),
                 get_instance_handle(),
@@ -203,8 +210,8 @@ impl<S> Window<S> {
     }
 
     /// Returns a reference to the state shared with the `wndproc` closure.
-    pub fn shared_state(&self) -> Pin<&S> {
-        unsafe { Pin::new_unchecked(&self.user_data().shared_state) }
+    pub fn state(&self) -> Pin<&S> {
+        unsafe { Pin::new_unchecked(&self.user_data().state) }
     }
 }
 
@@ -248,7 +255,7 @@ where
     let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut UserData<S, F>);
 
     let ret = (user_data.wndproc)(
-        Pin::new_unchecked(&user_data.shared_state),
+        Pin::new_unchecked(&user_data.state),
         WindowMessage {
             hwnd,
             msg,
@@ -278,4 +285,35 @@ where
     }
 
     ret.unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+}
+
+#[cfg(test)]
+mod test {
+    use std::rc::Rc;
+
+    use crate::run_message_loop;
+
+    use super::*;
+
+    #[test]
+    fn create_destroy_messages() {
+        let mut expected_messages = [WM_NCCREATE, WM_CREATE, WM_DESTROY, WM_NCDESTROY].into_iter();
+        let mut expected_message = expected_messages.next();
+        let match_cnt = Rc::new(Cell::new(0));
+        let w = Window::new(WindowType::TopLevel, (), {
+            let match_cnt = match_cnt.clone();
+            move |_, msg| {
+                dbg!(msg.msg);
+                if msg.msg == expected_message.unwrap() {
+                    expected_message = expected_messages.next();
+                    match_cnt.set(match_cnt.get() + 1);
+                }
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(match_cnt.get(), 2); // received WM_NCCREATE, WM_CREATE in order
+        drop(w);
+        assert_eq!(match_cnt.get(), 4); // received WM_DESTROY, WM_NCDESTROY in order
+    }
 }
