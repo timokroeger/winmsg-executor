@@ -1,4 +1,10 @@
-use std::{cell::RefCell, pin::Pin, ptr, sync::Once};
+use std::{
+    cell::{Cell, RefCell},
+    marker::PhantomData,
+    pin::Pin,
+    ptr,
+    sync::Once,
+};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
@@ -34,11 +40,31 @@ pub struct WindowMessage {
     pub lparam: LPARAM,
 }
 
-/// Owned window handle. Dropping the handle destroys the window.
+#[repr(C)]
+struct UserData<S, F> {
+    ref_count: Cell<usize>,
+    shared_state: S,
+    wndproc: F,
+}
+
+/// Owned window handle.
+///
+/// Dropping the handle destroys the window.
 #[derive(Debug)]
 pub struct Window<S> {
     hwnd: HWND,
-    shared_state_ptr: *const S,
+    _state: PhantomData<S>,
+}
+
+impl<S> Clone for Window<S> {
+    fn clone(&self) -> Self {
+        let ref_count = &self.user_data().ref_count;
+        ref_count.set(ref_count.get() + 1);
+        Self {
+            hwnd: self.hwnd,
+            _state: self._state,
+        }
+    }
 }
 
 unsafe impl<S: Send> Send for Window<S> {}
@@ -46,7 +72,11 @@ unsafe impl<S: Sync> Sync for Window<S> {}
 
 impl<S> Drop for Window<S> {
     fn drop(&mut self) {
-        unsafe { DestroyWindow(self.hwnd) };
+        let ref_count = &self.user_data().ref_count;
+        ref_count.set(ref_count.get() - 1);
+        if ref_count.get() == 0 {
+            unsafe { DestroyWindow(self.hwnd) };
+        }
     }
 }
 
@@ -55,6 +85,8 @@ impl<S> Drop for Window<S> {
 /// Possible failure reasons:
 /// * `WM_NCCREATE` message was handled but did not return 0
 /// * `WM_CREATE` message was handled but returned -1
+/// * Reached the maximum number of 10000 window handles per process:
+///   <https://devblogs.microsoft.com/oldnewthing/20070718-00/?p=25963>
 #[derive(Debug)]
 pub struct WindowCreationError;
 
@@ -69,7 +101,8 @@ impl<S> Window<S> {
     /// [Message-Only Windows] are useful for windows that do not need to be
     /// visible nor need access to broadcast messages from the desktop.
     ///
-    /// [Message-Only Windows]: https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+    /// [Message-Only Windows]:
+    /// https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
     ///
     /// Internally uses a `RefCell` for the closure to prevent it from being
     /// re-entered by nested message loops (e.g., from modal dialogs). Forwards
@@ -117,12 +150,14 @@ impl<S> Window<S> {
         });
 
         // Pass the closure and state as user data to our typed window process.
-        let user_data = Box::new((shared_state, wndproc));
-        let shared_state_ptr = ptr::from_ref(&user_data.0);
-
         let subclassinfo = SubClassInformation {
             wndproc: wndproc_typed::<S, F>,
-            user_data: Box::into_raw(user_data).cast(),
+            user_data: Box::into_raw(Box::new(UserData {
+                ref_count: Cell::new(1),
+                shared_state,
+                wndproc,
+            }))
+            .cast(),
         };
 
         let hwnd = unsafe {
@@ -154,8 +189,12 @@ impl<S> Window<S> {
 
         Ok(Self {
             hwnd,
-            shared_state_ptr,
+            _state: PhantomData,
         })
+    }
+
+    fn user_data(&self) -> &UserData<S, ()> {
+        unsafe { &*(GetWindowLongPtrA(self.hwnd, GWLP_USERDATA) as *const _) }
     }
 
     /// Returns this windows raw window handle.
@@ -165,7 +204,7 @@ impl<S> Window<S> {
 
     /// Returns a reference to the state shared with the `wndproc` closure.
     pub fn shared_state(&self) -> Pin<&S> {
-        unsafe { Pin::new_unchecked(&*self.shared_state_ptr) }
+        unsafe { Pin::new_unchecked(&self.user_data().shared_state) }
     }
 }
 
@@ -206,11 +245,10 @@ unsafe extern "system" fn wndproc_typed<S, F>(
 where
     F: Fn(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
 {
-    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, F));
+    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut UserData<S, F>);
 
-    let wndproc = &user_data.1;
-    let ret = wndproc(
-        Pin::new_unchecked(&user_data.0),
+    let ret = (user_data.wndproc)(
+        Pin::new_unchecked(&user_data.shared_state),
         WindowMessage {
             hwnd,
             msg,
@@ -229,6 +267,12 @@ where
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
         // the window is destroyed. Deallocate the window user data.
+        assert_eq!(
+            user_data.ref_count.get(),
+            0,
+            "Received unexpected `WM_DESTROY` message. Window struct must be \
+            dropped instead of calling `DestroyWindow()` directly."
+        );
         drop(Box::from_raw(user_data));
         return 0;
     }
