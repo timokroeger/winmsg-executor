@@ -139,7 +139,7 @@ pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
             match ret {
                 1 => {
                     // Handle the message in the msg filter hook.
-                    if CallMsgFilterA(&msg, 0) == 0 {
+                    if CallMsgFilterA(&msg, MSGF_USER as _) == 0 {
                         if let Some(panic_payload) = PANIC_PAYLOAD.take() {
                             panic::resume_unwind(panic_payload)
                         }

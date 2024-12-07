@@ -9,13 +9,12 @@ use windows_sys::Win32::{
 };
 
 thread_local! {
-    static MSG_FILTER_HOOK: Cell<*const ()> = const { Cell::new(ptr::null()) };
+    static MSG_FILTER_HOOK: Cell<*mut ()> = const { Cell::new(ptr::null_mut()) };
 }
 
 pub struct MsgFilterHook<'a, F> {
-    hhook: HHOOK,
-    _hook_proc: Box<F>,
-    _lifetime: PhantomData<&'a ()>,
+    handle: HHOOK,
+    _lifetime_and_type: PhantomData<&'a F>,
 }
 
 impl<'a, F: Fn(&MSG) -> bool + 'a> MsgFilterHook<'a, F> {
@@ -26,48 +25,45 @@ impl<'a, F: Fn(&MSG) -> bool + 'a> MsgFilterHook<'a, F> {
     pub unsafe fn register(handler: F) -> Self {
         assert!(MSG_FILTER_HOOK.get().is_null());
 
-        let handler = Box::new(handler);
-        MSG_FILTER_HOOK.set(&*handler as *const F as *const ());
+        MSG_FILTER_HOOK.set(Box::into_raw(Box::new(handler)) as *mut ());
 
-        unsafe extern "system" fn hook_proc<F: Fn(&MSG) -> bool>(
-            code: i32,
-            wparam: WPARAM,
-            lparam: LPARAM,
-        ) -> LRESULT {
-            if code < 0 {
-                return CallNextHookEx(ptr::null_mut(), code, wparam, lparam);
-            }
-
-            let f = &*(MSG_FILTER_HOOK.get() as *const F);
-            let msg = &*(lparam as *const MSG);
-            match panic::catch_unwind(AssertUnwindSafe(|| f(msg))) {
-                Ok(true) => 1,
-                Ok(false) => CallNextHookEx(ptr::null_mut(), code, wparam, lparam),
-                Err(panic_payload) => {
-                    crate::PANIC_PAYLOAD.set(Some(panic_payload));
-                    0
-                }
-            }
-        }
-
-        let hhook = unsafe {
-            SetWindowsHookExA(
-                WH_MSGFILTER,
-                Some(hook_proc::<F>),
-                ptr::null_mut(),
-                GetCurrentThreadId(),
-            )
-        };
+        let handle = SetWindowsHookExA(
+            WH_MSGFILTER,
+            Some(hook_proc::<F>),
+            ptr::null_mut(),
+            GetCurrentThreadId(),
+        );
         Self {
-            hhook,
-            _hook_proc: handler,
-            _lifetime: PhantomData,
+            handle,
+            _lifetime_and_type: PhantomData,
         }
     }
 }
 
 impl<F> Drop for MsgFilterHook<'_, F> {
     fn drop(&mut self) {
-        unsafe { UnhookWindowsHookEx(self.hhook) };
+        unsafe {
+            UnhookWindowsHookEx(self.handle);
+            drop(Box::from_raw(
+                MSG_FILTER_HOOK.replace(ptr::null_mut()) as *mut F
+            ));
+        }
+    }
+}
+
+unsafe extern "system" fn hook_proc<F: Fn(&MSG) -> bool>(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let f = &*(MSG_FILTER_HOOK.get() as *mut F);
+    let msg = &*(lparam as *const MSG);
+    match panic::catch_unwind(AssertUnwindSafe(|| f(msg))) {
+        Ok(true) => 1,
+        Ok(false) => CallNextHookEx(ptr::null_mut(), code, wparam, lparam),
+        Err(panic_payload) => {
+            crate::PANIC_PAYLOAD.set(Some(panic_payload));
+            0
+        }
     }
 }
