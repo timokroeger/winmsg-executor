@@ -3,9 +3,11 @@
 pub mod util;
 
 use std::{
+    any::Any,
     cell::Cell,
     future::Future,
     mem::{ManuallyDrop, MaybeUninit},
+    panic,
     pin::{pin, Pin},
     ptr::{self, NonNull},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
@@ -15,7 +17,10 @@ use async_task::Runnable;
 use util::{MsgFilterHook, Window, WindowType};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use crate::util::MsgFilterHook;
+thread_local! {
+    pub(crate) static PANIC_PAYLOAD: Cell<Option<Box<dyn Any + Send + 'static>>>
+        = const { Cell::new(None) };
+}
 
 const MSG_ID_WAKE: u32 = WM_USER;
 
@@ -135,8 +140,14 @@ pub fn run_message_loop_with_dispatcher(dispatcher: impl Fn(&MSG) -> bool) {
                 1 => {
                     // Handle the message in the msg filter hook.
                     if CallMsgFilterA(&msg, 0) == 0 {
+                        if let Some(panic_payload) = PANIC_PAYLOAD.take() {
+                            panic::resume_unwind(panic_payload)
+                        }
                         TranslateMessage(&msg);
                         DispatchMessageA(&msg);
+                    }
+                    if let Some(panic_payload) = PANIC_PAYLOAD.take() {
+                        panic::resume_unwind(panic_payload)
                     }
                 }
                 0 => break,
@@ -195,5 +206,17 @@ fn poll_ready<T>(future: impl Future<Output = T>) -> Result<T, ()> {
         Ok(result)
     } else {
         Err(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn panic_in_dispatcher() {
+        unsafe { PostMessageA(ptr::null_mut(), WM_USER, 0, 0) };
+        run_message_loop_with_dispatcher(|_| panic!());
     }
 }

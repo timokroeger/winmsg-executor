@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     marker::PhantomData,
+    panic::{self, AssertUnwindSafe},
     pin::Pin,
     ptr,
     sync::Once,
@@ -254,37 +255,44 @@ where
 {
     let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut UserData<S, F>);
 
-    let ret = (user_data.wndproc)(
-        Pin::new_unchecked(&user_data.state),
-        WindowMessage {
-            hwnd,
-            msg,
-            wparam,
-            lparam,
-        },
-    );
-
-    if msg == WM_CLOSE {
-        // We manage the window lifetime ourselves. Prevent the default
-        // handler from calling `DestroyWindow()` to keep the state
-        // allocated until the window wrapper struct is dropped.
-        return 0;
-    }
-
-    if msg == WM_NCDESTROY {
-        // This is the very last message received by this function before
-        // the window is destroyed. Deallocate the window user data.
-        assert_eq!(
-            user_data.ref_count.get(),
-            0,
-            "Received unexpected `WM_DESTROY` message. Window struct must be \
-            dropped instead of calling `DestroyWindow()` directly."
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let ret = (user_data.wndproc)(
+            Pin::new_unchecked(&user_data.state),
+            WindowMessage {
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            },
         );
-        drop(Box::from_raw(user_data));
-        return 0;
-    }
 
-    ret.unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+        if msg == WM_CLOSE {
+            // We manage the window lifetime ourselves. Prevent the default
+            // handler from calling `DestroyWindow()` to keep the state
+            // allocated until the window wrapper struct is dropped.
+            return Some(0);
+        }
+
+        if msg == WM_NCDESTROY {
+            // This is the very last message received by this function before
+            // the window is destroyed. Deallocate the window user data.
+            assert_eq!(
+                user_data.ref_count.get(),
+                0,
+                "Received unexpected `WM_DESTROY` message. Window struct must be \
+            dropped instead of calling `DestroyWindow()` directly."
+            );
+            drop(Box::from_raw(user_data));
+            return Some(0);
+        }
+
+        ret
+    }))
+    .unwrap_or_else(|panic_payload| {
+        crate::PANIC_PAYLOAD.set(Some(panic_payload));
+        None
+    })
+    .unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
 }
 
 #[cfg(test)]
@@ -315,5 +323,35 @@ mod test {
         assert_eq!(match_cnt.get(), 2); // received WM_NCCREATE, WM_CREATE in order
         drop(w);
         assert_eq!(match_cnt.get(), 4); // received WM_DESTROY, WM_NCDESTROY in order
+    }
+
+    // Reminder for myself for why `state` cannot be mutable.
+    #[test]
+    #[should_panic]
+    fn reenter_state() {
+        let state = RefCell::new(());
+
+        let rc_w = Rc::new(Cell::new(None::<Window<RefCell<()>>>));
+        let w = Window::new(WindowType::MessageOnly, state, {
+            let rc_w = rc_w.clone();
+            move |state, _msg| {
+                let state = state.borrow_mut();
+                if let Some(w) = rc_w.take() {
+                    // here we would get the second mutable alias
+                    w.state().borrow_mut();
+                }
+                drop(state);
+                None
+            }
+        })
+        .unwrap();
+
+        // This operation actually leaks the window state and closure because
+        // we created a cyclic reference.
+        rc_w.set(Some(w.clone()));
+
+        // Emulate a message from a user clicking on the window somewhere.
+        unsafe { PostMessageA(w.hwnd(), WM_USER, 0, 0) };
+        run_message_loop();
     }
 }
