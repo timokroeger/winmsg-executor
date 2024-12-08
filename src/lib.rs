@@ -84,7 +84,7 @@ unsafe fn spawn_unchecked_lifetime<T>(future: impl Future<Output = T>) -> JoinHa
 /// This function may be used to spawn tasks when the message loop is not
 /// running. The provided future will start running once the message loop
 /// is entered with [`block_on`] or [`MessageLoop::run`].
-pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
+pub fn spawn_local<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
     // SAFETY: future is `'static`
     unsafe { spawn_unchecked_lifetime(future) }
 }
@@ -358,7 +358,7 @@ mod test {
         // in parallel and we do not want to close the window of another test.
         let window_name = c"running_spawned_with_modal_dialog";
 
-        let task = spawn(async {
+        let task = spawn_local(async {
             // Wait for modal window to be open.
             while window_by_name(window_name).is_null() {
                 yield_now().await;
@@ -394,7 +394,7 @@ mod test {
         // in parallel and we do not want to close the window of another test.
         let window_name = c"message_loop_with_modal_dialog";
 
-        spawn(async {
+        spawn_local(async {
             unsafe {
                 MessageBoxA(
                     ptr::null_mut(),
@@ -405,7 +405,7 @@ mod test {
             }
         });
 
-        spawn(async {
+        spawn_local(async {
             // Check if modal window is actually open.
             assert!(!window_by_name(window_name).is_null());
 
