@@ -47,7 +47,7 @@ impl<T> Future for JoinHandle<T> {
     }
 }
 
-fn spawn_unchecked<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> JoinHandle<T> {
+fn spawn_local_unchecked<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> JoinHandle<T> {
     // Create a message only window to run the tasks.
     let window = Window::new_reentrant(WindowType::MessageOnly, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
@@ -90,8 +90,8 @@ fn spawn_unchecked<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> JoinHandl
 /// This function may be used to spawn tasks when the message loop is not
 /// running. The provided future will start running once the message loop
 /// is entered with [`block_on`] or [`MessageLoop::run`].
-pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
-    spawn_unchecked(future)
+pub fn spawn_local<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
+    spawn_local_unchecked(future)
 }
 
 /// Runs a future to completion on the calling threads message loop.
@@ -109,7 +109,7 @@ pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
 pub fn block_on<'a, T: 'a>(future: impl Future<Output = T> + 'a) -> T {
     let msg_loop = MessageLoop::new();
     // Wrap the future so it quits the message loop when finished.
-    let task = spawn_unchecked(async {
+    let task = spawn_local_unchecked(async {
         let result = future.await;
         msg_loop.quit();
         result
@@ -379,7 +379,7 @@ mod test {
         // in parallel and we do not want to close the window of another test.
         let window_name = c"running_spawned_with_modal_dialog";
 
-        let task = spawn(async {
+        let task = spawn_local(async {
             // Wait for modal window to be open.
             while window_by_name(window_name).is_null() {
                 yield_now().await;
@@ -415,7 +415,7 @@ mod test {
         // in parallel and we do not want to close the window of another test.
         let window_name = c"message_loop_with_modal_dialog";
 
-        spawn(async {
+        spawn_local(async {
             unsafe {
                 MessageBoxA(
                     ptr::null_mut(),
@@ -426,7 +426,7 @@ mod test {
             }
         });
 
-        spawn(async {
+        spawn_local(async {
             // Check if modal window is actually open.
             assert!(!window_by_name(window_name).is_null());
 
