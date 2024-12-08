@@ -1,9 +1,4 @@
-use std::{
-    cell::Cell,
-    marker::PhantomData,
-    panic::{self, AssertUnwindSafe},
-    ptr,
-};
+use std::{cell::Cell, marker::PhantomData, ptr};
 use windows_sys::Win32::{
     Foundation::*, System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*,
 };
@@ -58,12 +53,9 @@ unsafe extern "system" fn hook_proc<F: Fn(&MSG) -> bool>(
 ) -> LRESULT {
     let f = &*(MSG_FILTER_HOOK.get() as *mut F);
     let msg = &*(lparam as *const MSG);
-    match panic::catch_unwind(AssertUnwindSafe(|| f(msg))) {
-        Ok(true) => 1,
-        Ok(false) => CallNextHookEx(ptr::null_mut(), code, wparam, lparam),
-        Err(panic_payload) => {
-            crate::PANIC_PAYLOAD.set(Some(panic_payload));
-            0
-        }
+    if f(msg) {
+        1
+    } else {
+        CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
     }
 }
