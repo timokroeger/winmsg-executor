@@ -299,7 +299,7 @@ where
 mod test {
     use std::rc::Rc;
 
-    use crate::run_message_loop;
+    use crate::{FilterResult, MessageLoop};
 
     use super::*;
 
@@ -311,7 +311,6 @@ mod test {
         let w = Window::new(WindowType::TopLevel, (), {
             let match_cnt = match_cnt.clone();
             move |_, msg| {
-                dbg!(msg.msg);
                 if msg.msg == expected_message.unwrap() {
                     expected_message = expected_messages.next();
                     match_cnt.set(match_cnt.get() + 1);
@@ -352,6 +351,6 @@ mod test {
 
         // Emulate a message from a user clicking on the window somewhere.
         unsafe { PostMessageA(w.hwnd(), WM_USER, 0, 0) };
-        run_message_loop();
+        MessageLoop::run(|_, _| FilterResult::Forward);
     }
 }
