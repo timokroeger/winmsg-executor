@@ -23,8 +23,7 @@ fn main() {
             println!("thread async hello");
             poll_n_times(3).await;
             println!("thread async bye");
-        })
-        .unwrap();
+        });
         println!("thread bye");
     });
 
@@ -33,7 +32,6 @@ fn main() {
         println!("main async hello");
         poll_n_times(3).await;
         println!("main async bye");
-    })
-    .unwrap();
+    });
     println!("main bye");
 }
