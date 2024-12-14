@@ -1,4 +1,11 @@
-use std::{cell::RefCell, pin::Pin, ptr, sync::Once};
+use std::{
+    cell::RefCell,
+    marker::PhantomData,
+    mem,
+    pin::Pin,
+    ptr::{self, NonNull},
+    sync::Once,
+};
 
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
@@ -34,11 +41,19 @@ pub struct WindowMessage {
     pub lparam: LPARAM,
 }
 
-/// Owned window handle. Dropping the handle destroys the window.
+#[repr(C)]
+struct UserData<S, F> {
+    state: S,
+    wndproc: F,
+}
+
+/// Owned window handle.
+///
+/// Dropping the handle destroys the window.
 #[derive(Debug)]
 pub struct Window<S> {
     hwnd: HWND,
-    shared_state_ptr: *const S,
+    _state: PhantomData<S>,
 }
 
 impl<S> Drop for Window<S> {
@@ -47,54 +62,40 @@ impl<S> Drop for Window<S> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowType {
+    /// Visible window which receives broadcast messages from the desktop.
+    TopLevel,
+
+    /// [Message-Only Windows] are useful for windows that do not need to be
+    /// visible nor need access to broadcast messages from the desktop.
+    ///
+    /// [Message-Only Windows]:
+    /// https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+    MessageOnly,
+}
+
 /// Window could not be created.
 ///
 /// Possible failure reasons:
 /// * `WM_NCCREATE` message was handled but did not return 0
 /// * `WM_CREATE` message was handled but returned -1
+/// * Reached the maximum number of 10000 window handles per process:
+///   <https://devblogs.microsoft.com/oldnewthing/20070718-00/?p=25963>
 #[derive(Debug)]
 pub struct WindowCreationError;
 
 impl<S> Window<S> {
     /// Creates a new window with a `wndproc` closure.
     ///
-    /// The `shared_state` parameter will be allocated alongside the closure.
-    /// Allows for convenient access to variables from both inside and outside
-    /// of the closure without an extra `Rc<State>`. Use the
-    /// [`Window::shared_state()`] method to access the state from the outside.
-    ///
-    /// [Message-Only Windows] are useful for windows that do not need to be
-    /// visible nor need access to broadcast messages from the desktop.
-    ///
-    /// [Message-Only Windows]: https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
-    ///
-    /// Internally uses a `RefCell` for the closure to prevent it from being
-    /// re-entered by nested message loops (e.g., from modal dialogs). Forwards
-    /// nested messages to the default wndproc procedure. If you require more
-    /// control for those scenarios, use [`Window::new_reentrant()`].
+    /// The `state` parameter will be allocated alongside the closure. It is
+    /// meant as a convenient alternative to `Rc<State>` to access to variables
+    /// from both inside and outside of the closure. A pinned reference to the
+    /// state is passed as first parameter the closure. Use [`Window::state()`]
+    /// to access the state from the outside.
     pub fn new<F>(
-        message_only: bool,
-        shared_state: S,
-        wndproc: F,
-    ) -> Result<Self, WindowCreationError>
-    where
-        F: FnMut(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
-    {
-        let wndproc = RefCell::new(wndproc);
-        Self::new_reentrant(message_only, shared_state, move |state, msg| {
-            // Detect when `wndproc` is re-entered, which can happen when the user
-            // provided handler creates a modal dialog (e.g., a popup-menu). Rust rules
-            // do not allow us to create a second mutable reference to the user-provided
-            // handler. Run the default windows procedure instead.
-            let mut wndproc = wndproc.try_borrow_mut().ok()?;
-            wndproc(state, msg)
-        })
-    }
-
-    /// Same as [`Window::new()`] but allows the closure to be re-entered.
-    pub fn new_reentrant<F>(
-        message_only: bool,
-        shared_state: S,
+        window_type: WindowType,
+        state: S,
         wndproc: F,
     ) -> Result<Self, WindowCreationError>
     where
@@ -114,12 +115,9 @@ impl<S> Window<S> {
         });
 
         // Pass the closure and state as user data to our typed window process.
-        let user_data = Box::new((shared_state, wndproc));
-        let shared_state_ptr = ptr::from_ref(&user_data.0);
-
         let subclassinfo = SubClassInformation {
             wndproc: wndproc_typed::<S, F>,
-            user_data: Box::into_raw(user_data).cast(),
+            user_data: Box::into_raw(Box::new(UserData { state, wndproc })).cast(),
         };
 
         let hwnd = unsafe {
@@ -132,10 +130,9 @@ impl<S> Window<S> {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                if message_only {
-                    HWND_MESSAGE
-                } else {
-                    ptr::null_mut()
+                match window_type {
+                    WindowType::TopLevel => ptr::null_mut(),
+                    WindowType::MessageOnly => HWND_MESSAGE,
                 },
                 ptr::null_mut(),
                 get_instance_handle(),
@@ -151,8 +148,36 @@ impl<S> Window<S> {
 
         Ok(Self {
             hwnd,
-            shared_state_ptr,
+            _state: PhantomData,
         })
+    }
+
+    /// Same as [`Window::new()`] but allows the closure to be `FnMut`.
+    ///
+    /// Internally uses a `RefCell` for the closure to prevent it from being
+    /// re-entered by nested message loops (e.g., from modal dialogs). Forwards
+    /// nested messages to the default wndproc procedure.
+    pub fn new_checked<F>(
+        window_type: WindowType,
+        state: S,
+        wndproc: F,
+    ) -> Result<Self, WindowCreationError>
+    where
+        F: FnMut(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
+    {
+        let wndproc = RefCell::new(wndproc);
+        Self::new(window_type, state, move |state, msg| {
+            // Detect when `wndproc` is re-entered, which can happen when the user
+            // provided handler creates a modal dialog (e.g., a popup-menu). Rust rules
+            // do not allow us to create a second mutable reference to the user-provided
+            // handler. Run the default windows procedure instead.
+            let mut wndproc = wndproc.try_borrow_mut().ok()?;
+            wndproc(state, msg)
+        })
+    }
+
+    fn user_data(&self) -> &UserData<S, ()> {
+        unsafe { &*(GetWindowLongPtrA(self.hwnd, GWLP_USERDATA) as *const _) }
     }
 
     /// Returns this windows raw window handle.
@@ -161,8 +186,8 @@ impl<S> Window<S> {
     }
 
     /// Returns a reference to the state shared with the `wndproc` closure.
-    pub fn shared_state(&self) -> Pin<&S> {
-        unsafe { Pin::new_unchecked(&*self.shared_state_ptr) }
+    pub fn state(&self) -> Pin<&S> {
+        unsafe { Pin::new_unchecked(&self.user_data().state) }
     }
 }
 
@@ -203,11 +228,15 @@ unsafe extern "system" fn wndproc_typed<S, F>(
 where
     F: Fn(Pin<&S>, WindowMessage) -> Option<LRESULT> + 'static,
 {
-    let user_data = &mut *(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut (S, F));
+    let user_data_ptr: NonNull<UserData<S, F>> = if mem::size_of::<UserData<S, F>>() == 0 {
+        NonNull::dangling()
+    } else {
+        NonNull::new_unchecked(GetWindowLongPtrA(hwnd, GWLP_USERDATA) as _)
+    };
+    let user_data = user_data_ptr.as_ref();
 
-    let wndproc = &user_data.1;
-    let ret = wndproc(
-        Pin::new_unchecked(&user_data.0),
+    let ret = (user_data.wndproc)(
+        Pin::new_unchecked(&user_data.state),
         WindowMessage {
             hwnd,
             msg,
@@ -226,9 +255,77 @@ where
     if msg == WM_NCDESTROY {
         // This is the very last message received by this function before
         // the window is destroyed. Deallocate the window user data.
-        drop(Box::from_raw(user_data));
+        drop(Box::from_raw(user_data_ptr.as_ptr()));
         return 0;
     }
 
     ret.unwrap_or_else(|| DefWindowProcA(hwnd, msg, wparam, lparam))
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{FilterResult, MessageLoop};
+
+    use super::*;
+    use std::{
+        cell::Cell,
+        rc::{Rc, Weak},
+    };
+
+    #[test]
+    fn create_destroy_messages() {
+        let mut expected_messages = [WM_NCCREATE, WM_CREATE, WM_DESTROY, WM_NCDESTROY].into_iter();
+        let mut expected_message = expected_messages.next();
+
+        // Cannot be passed as state because we need to investigate it after drop.
+        let match_cnt = Rc::new(Cell::new(0));
+
+        let w = Window::new_checked(WindowType::TopLevel, (), {
+            let match_cnt = match_cnt.clone();
+            move |_, msg| {
+                dbg!(msg.msg);
+                if msg.msg == expected_message.unwrap() {
+                    expected_message = expected_messages.next();
+                    match_cnt.set(match_cnt.get() + 1);
+                }
+                None
+            }
+        })
+        .unwrap();
+
+        assert_eq!(match_cnt.get(), 2); // received WM_NCCREATE, WM_CREATE in order
+        drop(w);
+        assert_eq!(match_cnt.get(), 4); // received WM_DESTROY, WM_NCDESTROY in order
+    }
+
+    // Reminder for myself for why `state` cannot be mutable.
+    #[test]
+    fn reenter_state() {
+        let state = RefCell::new(false);
+
+        let w = Rc::new_cyclic(move |this: &Weak<Window<RefCell<bool>>>| {
+            let this = this.clone();
+            Window::new(WindowType::MessageOnly, state, move |state, _msg| {
+                let mut state = state.borrow_mut();
+                if let Some(w) = this.upgrade() {
+                    // here we would get the second mutable alias
+                    if w.state().try_borrow_mut().is_err() {
+                        *state = true;
+                        unsafe { PostMessageA(w.hwnd(), WM_USER, 0, 0) };
+                    }
+                }
+                None
+            })
+            .unwrap()
+        });
+
+        // Emulate a message from a user clicking on the window somewhere.
+        unsafe { PostMessageA(w.hwnd(), WM_USER, 0, 0) };
+        MessageLoop::run(|msg_loop, _| {
+            if *w.state().borrow() {
+                msg_loop.quit();
+            }
+            FilterResult::Forward
+        });
+    }
 }
