@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_task::Runnable;
-use util::Window;
+use util::{Window, WindowType};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::util::MsgFilterHook;
@@ -20,7 +20,7 @@ use crate::util::MsgFilterHook;
 const MSG_ID_WAKE: u32 = WM_USER;
 
 thread_local! {
-    static EXECUTOR_WINDOW: Window<()> = Window::new_reentrant(true, (), |_, msg| {
+    static EXECUTOR_WINDOW: Window<()> = Window::new(WindowType::MessageOnly, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             let runnable = unsafe {
                 let runnable_ptr = NonNull::new_unchecked(msg.lparam as *mut _);
