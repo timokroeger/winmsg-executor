@@ -3,9 +3,11 @@
 pub mod util;
 
 use std::{
+    any::Any,
     cell::Cell,
     future::Future,
     mem::{ManuallyDrop, MaybeUninit},
+    panic::{self, AssertUnwindSafe},
     pin::{pin, Pin},
     ptr::{self, NonNull},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
@@ -20,13 +22,16 @@ use crate::util::MsgFilterHook;
 const MSG_ID_WAKE: u32 = WM_USER;
 
 thread_local! {
+    static PANIC_PAYLOAD: Cell<Option<Box<dyn Any + Send + 'static>>> = const { Cell::new(None) };
     static EXECUTOR_WINDOW: Window<()> = Window::new(WindowType::MessageOnly, (), |_, msg| {
         if msg.msg == MSG_ID_WAKE {
             let runnable = unsafe {
                 let runnable_ptr = NonNull::new_unchecked(msg.lparam as *mut _);
                 Runnable::<()>::from_raw(runnable_ptr)
             };
-            runnable.run();
+            if let Err(panic_payload) = panic::catch_unwind(|| runnable.run()) {
+                PANIC_PAYLOAD.set(Some(panic_payload));
+            }
             Some(0)
         } else {
             None
@@ -176,6 +181,9 @@ impl MessageLoop {
                     TranslateMessage(&msg);
                     DispatchMessageA(&msg);
                 }
+                if let Some(panic_payload) = PANIC_PAYLOAD.take() {
+                    panic::resume_unwind(panic_payload)
+                }
             }
         }
     }
@@ -212,9 +220,28 @@ impl MessageLoop {
         // hook to get access to modal windows' internal message loop.
         // SAFETY: The Drop implementation of MsgFilterHook unregisters the hook,
         // ensuring that dispatchers will not be called after the end of the scope.
-        let _hook =
-            unsafe { MsgFilterHook::register(|msg| filter(&msg_loop, msg) == FilterResult::Drop) };
-
+        let _hook = unsafe {
+            MsgFilterHook::register(|msg| {
+                panic::catch_unwind(AssertUnwindSafe(|| {
+                    let filter_result = filter(&msg_loop, msg);
+                    // When quit() was called it has no real effect because we
+                    // are running in a modal loop. Post a quit message to exit
+                    // the message loop that is not under our control ASAP.
+                    if msg_loop.quit.get() {
+                        PostMessageA(msg.hwnd, WM_QUIT, 0, 0);
+                    }
+                    filter_result == FilterResult::Drop
+                }))
+                .unwrap_or_else(|payload| {
+                    PANIC_PAYLOAD.with(|panic_payload| {
+                        panic_payload.set(Some(payload));
+                    });
+                    // Also exit the modal loop ASAP when a panic occurs.
+                    PostMessageA(msg.hwnd, WM_QUIT, 0, 0);
+                    false
+                })
+            })
+        };
         msg_loop.run_loop(|msg| filter(&msg_loop, msg));
     }
 
@@ -389,6 +416,68 @@ mod test {
     }
 
     #[test]
+    #[should_panic]
+    fn reenter_filter_closure_panic() {
+        // The window name must be unique for each test because cargo runs tests
+        // in parallel and we do not want to close the window of another test.
+        let window_name = c"reenter_filter_closure";
+
+        post_thread_message(WM_USER);
+
+        let running_filter_closure = Cell::new(false);
+        MessageLoop::run(|_, msg| {
+            assert!(
+                !running_filter_closure.replace(true),
+                "Filter closure reentered"
+            );
+
+            if msg.hwnd.is_null() && msg.message == WM_USER {
+                unsafe {
+                    MessageBoxA(
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        window_name.as_ptr() as _,
+                        0,
+                    );
+                }
+            }
+
+            running_filter_closure.set(false);
+            FilterResult::Forward
+        });
+    }
+
+    #[test]
+    fn reenter_filter_closure_quit() {
+        // The window name must be unique for each test because cargo runs tests
+        // in parallel and we do not want to close the window of another test.
+        let window_name = c"reenter_filter_closure";
+
+        post_thread_message(WM_USER);
+
+        let running_filter_closure = Cell::new(false);
+        MessageLoop::run(|msg_loop, msg| {
+            if running_filter_closure.replace(true) {
+                msg_loop.quit();
+            }
+
+            if msg.hwnd.is_null() && msg.message == WM_USER {
+                unsafe {
+                    MessageBoxA(
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        window_name.as_ptr() as _,
+                        0,
+                    );
+                }
+            }
+
+            running_filter_closure.set(false);
+            FilterResult::Forward
+        });
+    }
+
+    #[test]
     fn message_loop_with_modal_dialog() {
         // The window name must be unique for each test because cargo runs tests
         // in parallel and we do not want to close the window of another test.
@@ -430,5 +519,35 @@ mod test {
             }
         });
         assert_eq!(expected_msg.get(), 10);
+    }
+
+    #[test]
+    fn reenter_filter_closure_quit_when_idle() {
+        // The window name must be unique for each test because cargo runs tests
+        // in parallel and we do not want to close the window of another test.
+        let window_name = c"reenter_filter_closure";
+
+        post_thread_message(WM_USER);
+
+        let running_filter_closure = Cell::new(false);
+        MessageLoop::run(|msg_loop, msg| {
+            if running_filter_closure.replace(true) {
+                msg_loop.quit_when_idle();
+            }
+
+            if msg.hwnd.is_null() && msg.message == WM_USER {
+                unsafe {
+                    MessageBoxA(
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        window_name.as_ptr() as _,
+                        0,
+                    );
+                }
+            }
+
+            running_filter_closure.set(false);
+            FilterResult::Forward
+        });
     }
 }
